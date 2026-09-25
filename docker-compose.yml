@@ -1,0 +1,55 @@
+name: axion
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-axion}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-axion}
+      POSTGRES_DB: ${POSTGRES_DB:-axion}
+    volumes:
+      - axion-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-axion} -d ${POSTGRES_DB:-axion}"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  api:
+    build: ./api
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-axion}:${POSTGRES_PASSWORD:-axion}@db:5432/${POSTGRES_DB:-axion}
+      SECRET_KEY: ${SECRET_KEY:-dev-only-secret-change-me}
+      WEB_URL: ${WEB_URL:-http://localhost:3000}
+      API_PUBLIC_URL: ${API_PUBLIC_URL:-http://localhost:8000}
+      EVENT_NAME: ${EVENT_NAME:-Axion Demo Hackathon}
+      EVENT_START: ${EVENT_START:-}
+      EVENT_END: ${EVENT_END:-}
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      MOCK_GITHUB: ${MOCK_GITHUB:-true}
+      SEED_DEMO: ${SEED_DEMO:-true}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ./web
+      # Baked into the build: Next resolves rewrite destinations at build time.
+      args:
+        API_INTERNAL_URL: http://api:8000
+    depends_on:
+      - api
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+
+volumes:
+  axion-db:

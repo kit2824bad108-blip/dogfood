@@ -1,0 +1,62 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 224 22% 8%;
+    --foreground: 210 32% 96%;
+
+    --card: 224 20% 11%;
+    --card-foreground: 210 32% 96%;
+
+    --muted: 224 16% 17%;
+    --muted-foreground: 215 18% 66%;
+
+    --primary: 172 66% 46%;
+    --primary-foreground: 224 30% 8%;
+
+    --secondary: 224 16% 20%;
+    --secondary-foreground: 210 32% 96%;
+
+    --accent: 262 68% 62%;
+    --accent-foreground: 210 32% 98%;
+
+    --destructive: 0 68% 56%;
+    --destructive-foreground: 210 32% 98%;
+
+    --success: 148 58% 46%;
+    --success-foreground: 224 30% 8%;
+
+    --border: 224 16% 20%;
+    --input: 224 16% 22%;
+    --ring: 172 66% 46%;
+
+    --radius: 0.75rem;
+  }
+
+  * {
+    border-color: hsl(var(--border));
+  }
+
+  body {
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
+    font-feature-settings: "rlig" 1, "calt" 1;
+  }
+}
+
+@layer utilities {
+  .grid-bg {
+    background-image:
+      linear-gradient(hsl(var(--border) / 0.55) 1px, transparent 1px),
+      linear-gradient(90deg, hsl(var(--border) / 0.55) 1px, transparent 1px);
+    background-size: 44px 44px;
+  }
+
+  .locked-blur {
+    filter: blur(7px);
+    user-select: none;
+    pointer-events: none;
+  }
+}
