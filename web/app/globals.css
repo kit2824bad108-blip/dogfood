@@ -2,21 +2,85 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+  Two themes, one brand.
+
+  Light is the "Threadline" composition: near-white mint-tinted paper, near-black
+  ink, teal as the only saturated accent.
+
+  Dark is near-black ink with the same teal primary, and the gradient stops flip
+  from teal->emerald to purple->pink so the highlighted headline word reads the
+  way it does in the reference.
+
+  How the theme is selected (no inline script, no flash of the wrong theme):
+
+    :root                 light  — the default, and what an explicit "light" gets
+    .dark                 dark   — an explicit "dark", rendered by the server from
+                                   the `axion-theme` cookie
+    @media ... dark       dark   — the user has not chosen, and their OS prefers
+                                   dark. Resolved entirely in CSS.
+
+  The dark palette therefore appears twice, and the two blocks must stay in step.
+  That duplication is the price of a first paint that is correct without
+  JavaScript: a blocking inline script would be the alternative, and any host
+  that rewrites or blocks inline scripts breaks the theme on load.
+*/
 @layer base {
   :root {
-    --background: 224 22% 8%;
+    --background: 160 26% 99%;
+    --foreground: 200 30% 8%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 200 30% 8%;
+
+    --muted: 165 18% 96%;
+    --muted-foreground: 200 12% 42%;
+
+    --primary: 172 82% 33%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 168 24% 95%;
+    --secondary-foreground: 200 30% 14%;
+
+    --accent: 262 62% 52%;
+    --accent-foreground: 0 0% 100%;
+
+    --destructive: 0 72% 48%;
+    --destructive-foreground: 0 0% 100%;
+
+    --success: 152 62% 32%;
+    --success-foreground: 0 0% 100%;
+
+    --warning: 32 92% 40%;
+    --warning-foreground: 0 0% 100%;
+
+    --border: 170 16% 88%;
+    --input: 170 16% 84%;
+    --ring: 172 82% 33%;
+
+    --gradient-from: 172 82% 33%;
+    --gradient-to: 160 70% 42%;
+
+    --radius: 0.75rem;
+
+    color-scheme: light;
+  }
+
+  /* Explicit dark. Keep in step with the media-query block below. */
+  .dark {
+    --background: 228 26% 6%;
     --foreground: 210 32% 96%;
 
-    --card: 224 20% 11%;
+    --card: 228 22% 9%;
     --card-foreground: 210 32% 96%;
 
-    --muted: 224 16% 17%;
+    --muted: 228 16% 16%;
     --muted-foreground: 215 18% 66%;
 
-    --primary: 172 66% 46%;
-    --primary-foreground: 224 30% 8%;
+    --primary: 170 72% 45%;
+    --primary-foreground: 228 30% 7%;
 
-    --secondary: 224 16% 20%;
+    --secondary: 228 16% 18%;
     --secondary-foreground: 210 32% 96%;
 
     --accent: 262 68% 62%;
@@ -26,13 +90,60 @@
     --destructive-foreground: 210 32% 98%;
 
     --success: 148 58% 46%;
-    --success-foreground: 224 30% 8%;
+    --success-foreground: 228 30% 8%;
 
-    --border: 224 16% 20%;
-    --input: 224 16% 22%;
-    --ring: 172 66% 46%;
+    --warning: 38 92% 62%;
+    --warning-foreground: 228 30% 8%;
 
-    --radius: 0.75rem;
+    --border: 226 16% 19%;
+    --input: 226 16% 22%;
+    --ring: 170 72% 45%;
+
+    --gradient-from: 268 70% 64%;
+    --gradient-to: 330 80% 64%;
+
+    color-scheme: dark;
+  }
+
+  /* Not chosen yet, and the OS prefers dark. Keep in step with `.dark` above. */
+  @media (prefers-color-scheme: dark) {
+    :root:not(.light):not(.dark) {
+      --background: 228 26% 6%;
+      --foreground: 210 32% 96%;
+
+      --card: 228 22% 9%;
+      --card-foreground: 210 32% 96%;
+
+      --muted: 228 16% 16%;
+      --muted-foreground: 215 18% 66%;
+
+      --primary: 170 72% 45%;
+      --primary-foreground: 228 30% 7%;
+
+      --secondary: 228 16% 18%;
+      --secondary-foreground: 210 32% 96%;
+
+      --accent: 262 68% 62%;
+      --accent-foreground: 210 32% 98%;
+
+      --destructive: 0 68% 56%;
+      --destructive-foreground: 210 32% 98%;
+
+      --success: 148 58% 46%;
+      --success-foreground: 228 30% 8%;
+
+      --warning: 38 92% 62%;
+      --warning-foreground: 228 30% 8%;
+
+      --border: 226 16% 19%;
+      --input: 226 16% 22%;
+      --ring: 170 72% 45%;
+
+      --gradient-from: 268 70% 64%;
+      --gradient-to: 330 80% 64%;
+
+      color-scheme: dark;
+    }
   }
 
   * {
@@ -47,6 +158,7 @@
 }
 
 @layer utilities {
+  /* The faint blueprint grid behind the hero, in both themes. */
   .grid-bg {
     background-image:
       linear-gradient(hsl(var(--border) / 0.55) 1px, transparent 1px),
@@ -54,9 +166,39 @@
     background-size: 44px 44px;
   }
 
+  /* The highlighted headline word. */
+  .text-gradient {
+    background-image: linear-gradient(
+      92deg,
+      hsl(var(--gradient-from)),
+      hsl(var(--gradient-to))
+    );
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  /* Soft accent wash for the hero, tuned per theme by the tokens. */
+  .hero-glow {
+    background-image: radial-gradient(
+      60% 60% at 50% 0%,
+      hsl(var(--primary) / 0.14),
+      transparent 70%
+    );
+  }
+
   .locked-blur {
     filter: blur(7px);
     user-select: none;
     pointer-events: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
   }
 }

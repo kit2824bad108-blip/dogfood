@@ -6,15 +6,20 @@ settings are read once at import time.
 from __future__ import annotations
 
 import os
+from datetime import datetime, timedelta, timezone
+
+# The event window has to be relative to *now*: the API rejects writes once
+# `EVENT_END` has passed, so a hard-coded date would silently start testing the
+# closed-window path instead of the open one.
+_NOW = datetime.now(timezone.utc)
 
 os.environ["DATABASE_URL"] = "sqlite+pysqlite:///:memory:"
 os.environ["SECRET_KEY"] = "test-secret-key"
 os.environ["MOCK_GITHUB"] = "true"
 os.environ["WEB_URL"] = "http://localhost:3000"
-os.environ["EVENT_START"] = "2026-09-20T00:00:00+00:00"
-os.environ["EVENT_END"] = "2026-09-23T00:00:00+00:00"
-
-from datetime import datetime, timezone  # noqa: E402
+os.environ["SEED_DEMO"] = "false"
+os.environ["EVENT_START"] = (_NOW - timedelta(hours=48)).isoformat()
+os.environ["EVENT_END"] = (_NOW + timedelta(hours=24)).isoformat()
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
@@ -82,3 +87,30 @@ def auth(client):
 
 def utc(*args) -> datetime:
     return datetime(*args, tzinfo=timezone.utc)
+
+
+@pytest.fixture()
+def closed_window(monkeypatch):
+    """Move the event window into the past for the routers that read settings.
+
+    `Settings` is a frozen dataclass, so the module-level name is replaced
+    rather than mutated — routers look up `settings` at call time.
+    """
+    from dataclasses import replace
+
+    from app import config
+
+    expired = replace(
+        config.settings,
+        event_start=_NOW - timedelta(hours=96),
+        event_end=_NOW - timedelta(hours=1),
+    )
+    for module in (
+        "app.routers.submissions",
+        "app.routers.event",
+        "app.routers.auth",
+        "app.services",
+    ):
+        monkeypatch.setattr(f"{module}.settings", expired, raising=False)
+    monkeypatch.setattr(config, "settings", expired)
+    return expired

@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
 import { api, errorMessage } from "@/lib/api";
-import type { JudgeSubmission } from "@/lib/types";
+import type { JudgeSubmission, Rubric } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 type Presentation = {
@@ -26,19 +26,24 @@ function ScorePicker({
   value,
   onChange,
   disabled,
+  label,
 }: {
   value: number | null;
   onChange: (next: number) => void;
   disabled?: boolean;
+  /** Announced by screen readers; a bare "7" button is meaningless on its own. */
+  label: string;
 }) {
   return (
-    <div className="flex flex-wrap gap-1.5">
+    <div role="group" aria-label={label} className="flex flex-wrap gap-1.5">
       {Array.from({ length: 10 }, (_, index) => index + 1).map((score) => (
         <button
           key={score}
           type="button"
           disabled={disabled}
           onClick={() => onChange(score)}
+          aria-pressed={value === score}
+          aria-label={`${label}: ${score} out of 10`}
           className={cn(
             "h-9 w-9 rounded-md border text-sm font-medium transition-colors disabled:opacity-50",
             value === score
@@ -53,15 +58,38 @@ function ScorePicker({
   );
 }
 
+/**
+ * The same weight-normalised mean the API applies, previewed as you click.
+ *
+ * Computed from `percent` rather than `weight`: a weighted mean is unaffected by
+ * the scale of the weights, percentages are always present in every rubric
+ * payload, and deriving it from the field that is guaranteed to exist is what
+ * stops a partial payload from turning this into NaN.
+ */
+function weightedScore(rubric: Rubric, values: Record<string, number>): number | null {
+  const entries = rubric.criteria.filter(
+    (criterion) => values[criterion.key] !== undefined && Number.isFinite(criterion.percent),
+  );
+  if (entries.length === 0) return null;
+  const total = entries.reduce((sum, criterion) => sum + criterion.percent, 0);
+  if (total <= 0) return null;
+  const blended =
+    entries.reduce((sum, criterion) => sum + criterion.percent * values[criterion.key], 0) / total;
+  if (!Number.isFinite(blended)) return null;
+  return Math.max(1, Math.min(10, Math.round(blended)));
+}
+
 function ScoreContent() {
   const params = useParams<{ id: string }>();
   const submissionId = Number(params.id);
 
   const [submission, setSubmission] = useState<JudgeSubmission | null>(null);
+  const [rubric, setRubric] = useState<Rubric | null>(null);
   const [presentation, setPresentation] = useState<Presentation | null>(null);
   const [presentationError, setPresentationError] = useState<string | null>(null);
 
-  const [technicalScore, setTechnicalScore] = useState<number | null>(null);
+  const [criteria, setCriteria] = useState<Record<string, number>>({});
+  const [fallbackScore, setFallbackScore] = useState<number | null>(null);
   const [technicalComment, setTechnicalComment] = useState("");
   const [presentationScore, setPresentationScore] = useState<number | null>(null);
   const [presentationComment, setPresentationComment] = useState("");
@@ -72,10 +100,14 @@ function ScoreContent() {
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
-    const data = await api.get<{ submission: JudgeSubmission }>(`/judging/submissions/${submissionId}`);
+    const data = await api.get<{ submission: JudgeSubmission; rubric: Rubric }>(
+      `/judging/submissions/${submissionId}`,
+    );
     const found = data.submission;
     setSubmission(found);
-    setTechnicalScore(found.score?.technical_score ?? null);
+    setRubric(data.rubric);
+    setCriteria(found.score?.criteria ?? {});
+    setFallbackScore(found.score?.technical_score ?? null);
     setTechnicalComment(found.score?.technical_comment ?? "");
     setPresentationScore(found.score?.presentation_score ?? null);
     setPresentationComment(found.score?.presentation_comment ?? "");
@@ -101,21 +133,32 @@ function ScoreContent() {
 
   async function saveTechnical(event: React.FormEvent) {
     event.preventDefault();
-    if (technicalScore === null) {
-      setError("Choose a technical score from 1 to 10.");
+    if (!rubric) return;
+    const supplied = rubric.criteria.filter((criterion) => criteria[criterion.key] !== undefined);
+    const missing = rubric.criteria.filter((criterion) => criteria[criterion.key] === undefined);
+    if (missing.length > 0) {
+      setError(`Score every criterion first: ${missing.map((c) => c.label).join(", ")}.`);
       return;
     }
     setBusy(true);
     setError(null);
     setMessage(null);
     try {
-      await api.post("/judging/scores", {
-        submission_id: submissionId,
-        technical_score: technicalScore,
-        technical_comment: technicalComment || null,
-      });
+      const result = await api.post<{ score: { technical_score: number | null } }>(
+        "/judging/scores",
+        {
+          submission_id: submissionId,
+          criteria: supplied.map((criterion) => ({
+            key: criterion.key,
+            value: criteria[criterion.key],
+          })),
+          technical_comment: technicalComment || null,
+        },
+      );
       await load();
-      setMessage("Technical verdict recorded. The presentation tier is now unlocked for you.");
+      setMessage(
+        `Technical verdict recorded — weighted score ${result.score.technical_score}/10. The presentation tier is now unlocked for you.`,
+      );
     } catch (caught) {
       setError(errorMessage(caught));
     } finally {
@@ -151,6 +194,8 @@ function ScoreContent() {
   if (!submission) return <p className="text-sm text-destructive">{error ?? "Submission not found."}</p>;
 
   const unlocked = submission.presentation_unlocked;
+  const preview = rubric ? weightedScore(rubric, criteria) : null;
+  const tagged = rubric ? rubric.criteria.every((c) => criteria[c.key] !== undefined) : false;
 
   return (
     <div className="space-y-6">
@@ -200,23 +245,58 @@ function ScoreContent() {
         <CardHeader>
           <CardTitle>Tier 1 — Technical evaluation</CardTitle>
           <CardDescription>
-            Code quality, architecture and documentation. Scored before any demo is visible.
+            Code quality, architecture and documentation. Scored before any demo is visible, against
+            the organiser&apos;s weighted rubric.
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <form onSubmit={saveTechnical} className="space-y-4">
-            <div className="space-y-2">
-              <p className="text-xs uppercase tracking-wide text-muted-foreground">Technical score</p>
-              <ScorePicker value={technicalScore} onChange={setTechnicalScore} disabled={busy} />
+          <form onSubmit={saveTechnical} className="space-y-5">
+            {rubric?.criteria.map((criterion) => (
+              <div key={criterion.key} className="space-y-2">
+                <div className="flex items-baseline justify-between gap-3">
+                  <p className="text-xs uppercase tracking-wide text-muted-foreground">
+                    {criterion.label}
+                  </p>
+                  <span className="font-mono text-xs text-primary">{criterion.percent}%</span>
+                </div>
+                <ScorePicker
+                  label={criterion.label}
+                  value={criteria[criterion.key] ?? null}
+                  onChange={(next) => setCriteria((previous) => ({ ...previous, [criterion.key]: next }))}
+                  disabled={busy}
+                />
+              </div>
+            ))}
+
+            <div className="flex flex-wrap items-center gap-3 rounded-md border border-border bg-background/40 px-4 py-3">
+              <div>
+                <p className="text-xs uppercase tracking-wide text-muted-foreground">
+                  Weighted technical score
+                </p>
+                <p className="text-2xl font-semibold tracking-tight">
+                  {preview === null ? "—" : `${preview}/10`}
+                </p>
+              </div>
+              <p className="max-w-md text-xs text-muted-foreground">
+                {preview === null
+                  ? "Score each criterion and the weighted mean appears here. This is the single number the Z-score engine normalizes."
+                  : "This is the number the Z-score engine will normalize against your own grading distribution."}
+              </p>
             </div>
+
             <Textarea
               value={technicalComment}
-              onChange={(event) => setTechnicalComment(event.target.value)}
+              onChange={(inputEvent) => setTechnicalComment(inputEvent.target.value)}
               placeholder="What is technically strong or weak about this repository?"
             />
-            <Button type="submit" disabled={busy}>
+            <Button type="submit" disabled={busy || !tagged}>
               {submission.score?.technical_score ? "Update technical verdict" : "Submit technical verdict"}
             </Button>
+            {!tagged && (
+              <p className="text-xs text-muted-foreground">
+                Every criterion is required — {fallbackScore === null ? "nothing filed yet" : `currently ${fallbackScore}/10`}.
+              </p>
+            )}
           </form>
         </CardContent>
       </Card>
@@ -278,11 +358,16 @@ function ScoreContent() {
               <form onSubmit={savePresentation} className="space-y-4">
                 <div className="space-y-2">
                   <p className="text-xs uppercase tracking-wide text-muted-foreground">Presentation score</p>
-                  <ScorePicker value={presentationScore} onChange={setPresentationScore} disabled={busy} />
+                  <ScorePicker
+                    label="Presentation score"
+                    value={presentationScore}
+                    onChange={setPresentationScore}
+                    disabled={busy}
+                  />
                 </div>
                 <Textarea
                   value={presentationComment}
-                  onChange={(event) => setPresentationComment(event.target.value)}
+                  onChange={(inputEvent) => setPresentationComment(inputEvent.target.value)}
                   placeholder="How convincing was the demo, given the code you just read?"
                 />
                 <Button type="submit" disabled={busy}>

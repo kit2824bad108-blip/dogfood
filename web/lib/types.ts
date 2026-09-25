@@ -10,12 +10,123 @@ export type User = {
 
 export type Me = { authenticated: boolean; user: User | null };
 
+export type DemoAccount = {
+  role: Role;
+  email: string;
+  name: string;
+  seeded: boolean;
+};
+
 export type AuthStatus = {
   github_oauth_enabled: boolean;
   event_name: string;
   event_start: string;
   event_end: string;
   mock_github: boolean;
+  local_dev_login: boolean;
+  demo_accounts: DemoAccount[];
+};
+
+export type RubricCriterion = {
+  key: string;
+  label: string;
+  /** Relative weight. Optional because the shares are what actually matter. */
+  weight?: number;
+  /** The share of the technical score, already normalised to sum to 100. */
+  percent: number;
+};
+
+export type Rubric = {
+  id: number | null;
+  name: string | null;
+  criteria: RubricCriterion[];
+};
+
+export type Track = {
+  id: number;
+  name: string;
+  slug: string;
+  description: string | null;
+  prize_pool: string | null;
+  display_order: number;
+  prizes: Array<{ id: number; rank: number; title: string; description: string | null }>;
+};
+
+export type EventWindow = {
+  now: string;
+  opens_at: string;
+  closes_at: string;
+  closed: boolean;
+  not_yet_open: boolean;
+};
+
+export type PublicEvent = {
+  event: {
+    name: string;
+    starts_at: string;
+    ends_at: string;
+    phase: "upcoming" | "open" | "closed";
+    submission_window: EventWindow;
+  };
+  environment: {
+    github_oauth_enabled: boolean;
+    mock_github: boolean;
+    local_dev_login: boolean;
+    commit_integrity_source: string;
+  };
+  rubric: Rubric;
+  tracks: Track[];
+  overall_prizes: Array<{ id: number; rank: number; title: string; description: string | null }>;
+  stats: {
+    teams: number;
+    submissions: number;
+    drafts: number;
+    judges: number;
+    verdicts: number;
+    assignments: number;
+  };
+};
+
+export type GalleryProject = {
+  id: number;
+  title: string;
+  team: string;
+  summary: string | null;
+  repo_url: string;
+  docs_url: string | null;
+  track: { slug: string; name: string } | null;
+  submitted_at: string | null;
+};
+
+export type Gallery = {
+  query: string;
+  track: string | null;
+  count: number;
+  tracks: Array<{ slug: string; name: string }>;
+  projects: GalleryProject[];
+};
+
+export type JudgeProgressRow = {
+  judge_id: number;
+  name: string;
+  email: string;
+  assigned: number;
+  technical_done: number;
+  technical_pending: number;
+  presentation_done: number;
+  percent: number;
+  last_activity: string | null;
+};
+
+export type JudgingProgress = {
+  submissions: number;
+  judges: JudgeProgressRow[];
+  totals: {
+    expected_technical_verdicts: number;
+    technical_verdicts: number;
+    outstanding: number;
+    percent: number;
+  };
 };
 
 export type TeamMember = { id: number; name: string; email: string };
@@ -43,6 +154,8 @@ export type CommitIntegrity = {
   checked_at: string | null;
 };
 
+export type SubmissionStatus = "draft" | "submitted";
+
 export type Submission = {
   id: number;
   team_id: number;
@@ -53,6 +166,9 @@ export type Submission = {
   demo_url: string | null;
   video_url: string | null;
   summary: string | null;
+  track_id: number | null;
+  status: SubmissionStatus;
+  submitted_at: string | null;
   commit_integrity: CommitIntegrity;
   created_at: string | null;
   updated_at: string | null;
@@ -65,6 +181,8 @@ export type ScoreRecord = {
   presentation_comment: string | null;
   technical_submitted_at: string | null;
   presentation_submitted_at: string | null;
+  rubric_id: number | null;
+  criteria: Record<string, number>;
 };
 
 export type JudgeSubmission = {

@@ -53,6 +53,27 @@ export function errorMessage(error: unknown): string {
   return "Something went wrong";
 }
 
+/**
+ * Fetch a server-generated file (CSV, Markdown) and hand it to the browser.
+ *
+ * `downloadText` needs the body in memory already; the export endpoints stream,
+ * so this goes through fetch and a blob instead of the JSON helper.
+ */
+export async function downloadFile(path: string, filename: string): Promise<void> {
+  const response = await fetch(`/api${path}`, { credentials: "same-origin", cache: "no-store" });
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new ApiError(response.status, detail || `Request failed with status ${response.status}`);
+  }
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
 /** Trigger a browser download for a generated archive file. */
 export function downloadText(filename: string, content: string, type = "text/plain") {
   const blob = new Blob([content], { type });

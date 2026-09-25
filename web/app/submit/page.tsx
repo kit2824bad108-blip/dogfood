@@ -10,7 +10,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { api, errorMessage } from "@/lib/api";
-import type { Submission, TeamSummary } from "@/lib/types";
+import type { EventWindow, PublicEvent, Submission, SubmissionStatus, TeamSummary } from "@/lib/types";
+import { cn } from "@/lib/utils";
 
 type FormState = {
   title: string;
@@ -19,6 +20,7 @@ type FormState = {
   demo_url: string;
   video_url: string;
   summary: string;
+  track_id: string;
 };
 
 const EMPTY: FormState = {
@@ -28,23 +30,29 @@ const EMPTY: FormState = {
   demo_url: "",
   video_url: "",
   summary: "",
+  track_id: "",
 };
 
 function SubmissionContent() {
   const [team, setTeam] = useState<TeamSummary | null>(null);
   const [submission, setSubmission] = useState<Submission | null>(null);
+  const [eventWindow, setEventWindow] = useState<EventWindow | null>(null);
+  const [event, setEvent] = useState<PublicEvent | null>(null);
   const [form, setForm] = useState<FormState>(EMPTY);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [saved, setSaved] = useState(false);
+  const [saved, setSaved] = useState<string | null>(null);
 
   async function refresh() {
-    const data = await api.get<{ submission: Submission | null; team: TeamSummary | null }>(
-      "/submissions/me",
-    );
+    const data = await api.get<{
+      submission: Submission | null;
+      team: TeamSummary | null;
+      window: EventWindow;
+    }>("/submissions/me");
     setSubmission(data.submission);
     setTeam(data.team);
+    setEventWindow(data.window);
     if (data.submission) {
       setForm({
         title: data.submission.title,
@@ -53,6 +61,7 @@ function SubmissionContent() {
         demo_url: data.submission.demo_url ?? "",
         video_url: data.submission.video_url ?? "",
         summary: data.submission.summary ?? "",
+        track_id: data.submission.track_id ? String(data.submission.track_id) : "",
       });
     }
     setLoading(false);
@@ -63,13 +72,13 @@ function SubmissionContent() {
       setError(errorMessage(caught));
       setLoading(false);
     });
+    api.get<PublicEvent>("/event").then(setEvent).catch(() => setEvent(null));
   }, []);
 
-  async function save(event: React.FormEvent) {
-    event.preventDefault();
+  async function save(status: SubmissionStatus) {
     setBusy(true);
     setError(null);
-    setSaved(false);
+    setSaved(null);
     try {
       const data = await api.post<{ submission: Submission }>("/submissions", {
         title: form.title,
@@ -78,9 +87,15 @@ function SubmissionContent() {
         demo_url: form.demo_url || null,
         video_url: form.video_url || null,
         summary: form.summary || null,
+        track_id: form.track_id ? Number(form.track_id) : null,
+        status,
       });
       setSubmission(data.submission);
-      setSaved(true);
+      setSaved(
+        status === "draft"
+          ? "Draft saved. It stays invisible to judges until you submit it."
+          : "Submission entered. Judges have been assigned.",
+      );
     } catch (caught) {
       setError(errorMessage(caught));
     } finally {
@@ -109,19 +124,47 @@ function SubmissionContent() {
   }
 
   const integrity = submission?.commit_integrity;
+  const isDraft = submission?.status === "draft";
+  const closed = eventWindow?.closed ?? false;
+  const tracks = event?.tracks ?? [];
 
   return (
     <div className="space-y-6">
+      {closed && (
+        <Card className="border-destructive/40 bg-destructive/5">
+          <CardContent className="pt-6 text-sm">
+            <p className="font-medium text-destructive">The submission window is closed.</p>
+            <p className="mt-1 text-muted-foreground">
+              It closed {eventWindow ? new Date(eventWindow.closes_at).toLocaleString() : ""}. The
+              API rejects writes against the server clock, so this page is read-only.
+            </p>
+          </CardContent>
+        </Card>
+      )}
+
       <Card>
         <CardHeader>
-          <CardTitle>Submission — {team.name}</CardTitle>
+          <CardTitle className="flex flex-wrap items-center gap-3">
+            Submission — {team.name}
+            {submission && (
+              <Badge variant={isDraft ? "warning" : "success"}>
+                {isDraft ? "draft" : "submitted"}
+              </Badge>
+            )}
+          </CardTitle>
           <CardDescription>
-            The repository and documentation are what judges see first. Demo and video links stay hidden until
-            a judge has filed a technical verdict.
+            The repository and documentation are what judges see first. Demo and video links stay hidden
+            until a judge has filed a technical verdict.
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <form onSubmit={save} className="space-y-4">
+          <form
+            onSubmit={(formEvent) => {
+              formEvent.preventDefault();
+              save("submitted");
+            }}
+            className="space-y-4"
+          >
             <div className="grid gap-4 md:grid-cols-2">
               <div className="space-y-1.5">
                 <Label htmlFor="title">Project title</Label>
@@ -129,8 +172,9 @@ function SubmissionContent() {
                   id="title"
                   required
                   value={form.title}
-                  onChange={(event) => update("title", event.target.value)}
+                  onChange={(inputEvent) => update("title", inputEvent.target.value)}
                   placeholder="Zero-Knowledge Vault"
+                  disabled={closed}
                 />
               </div>
               <div className="space-y-1.5">
@@ -139,17 +183,43 @@ function SubmissionContent() {
                   id="repo_url"
                   required
                   value={form.repo_url}
-                  onChange={(event) => update("repo_url", event.target.value)}
+                  onChange={(inputEvent) => update("repo_url", inputEvent.target.value)}
                   placeholder="https://github.com/your-org/your-repo"
+                  disabled={closed}
                 />
               </div>
+              {tracks.length > 0 && (
+                <div className="space-y-1.5">
+                  <Label htmlFor="track_id">Track</Label>
+                  <select
+                    id="track_id"
+                    value={form.track_id}
+                    onChange={(changeEvent) => update("track_id", changeEvent.target.value)}
+                    disabled={closed}
+                    className={cn(
+                      "flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm",
+                      "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                      "disabled:cursor-not-allowed disabled:opacity-50",
+                    )}
+                  >
+                    <option value="">No track</option>
+                    {tracks.map((track) => (
+                      <option key={track.id} value={track.id}>
+                        {track.name}
+                        {track.prize_pool ? ` — ${track.prize_pool}` : ""}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
               <div className="space-y-1.5">
                 <Label htmlFor="docs_url">Documentation URL</Label>
                 <Input
                   id="docs_url"
                   value={form.docs_url}
-                  onChange={(event) => update("docs_url", event.target.value)}
+                  onChange={(inputEvent) => update("docs_url", inputEvent.target.value)}
                   placeholder="README or docs link"
+                  disabled={closed}
                 />
               </div>
               <div className="space-y-1.5">
@@ -157,8 +227,9 @@ function SubmissionContent() {
                 <Input
                   id="demo_url"
                   value={form.demo_url}
-                  onChange={(event) => update("demo_url", event.target.value)}
+                  onChange={(inputEvent) => update("demo_url", inputEvent.target.value)}
                   placeholder="https://your-app.example.dev"
+                  disabled={closed}
                 />
               </div>
               <div className="space-y-1.5">
@@ -166,8 +237,9 @@ function SubmissionContent() {
                 <Input
                   id="video_url"
                   value={form.video_url}
-                  onChange={(event) => update("video_url", event.target.value)}
+                  onChange={(inputEvent) => update("video_url", inputEvent.target.value)}
                   placeholder="https://youtu.be/…"
+                  disabled={closed}
                 />
               </div>
             </div>
@@ -176,22 +248,46 @@ function SubmissionContent() {
               <Textarea
                 id="summary"
                 value={form.summary}
-                onChange={(event) => update("summary", event.target.value)}
+                onChange={(inputEvent) => update("summary", inputEvent.target.value)}
                 placeholder="What did you build, and what is technically interesting about it?"
+                disabled={closed}
               />
             </div>
 
             {error && <p className="text-sm text-destructive">{error}</p>}
-            {saved && <p className="text-sm text-success">Submission saved.</p>}
+            {saved && <p className="text-sm text-success">{saved}</p>}
 
-            <Button type="submit" disabled={busy}>
-              {busy ? "Saving…" : submission ? "Update submission" : "Submit project"}
-            </Button>
+            <div className="flex flex-wrap items-center gap-2">
+              {!submission || isDraft ? (
+                <>
+                  <Button type="submit" disabled={busy || closed}>
+                    {busy ? "Saving…" : "Submit project"}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={busy || closed}
+                    onClick={() => save("draft")}
+                  >
+                    Save as draft
+                  </Button>
+                </>
+              ) : (
+                <Button type="submit" disabled={busy || closed}>
+                  {busy ? "Saving…" : "Update submission"}
+                </Button>
+              )}
+              {isDraft && (
+                <span className="text-xs text-muted-foreground">
+                  A draft is not judged, not listed in the gallery, and has no Commit Integrity check.
+                </span>
+              )}
+            </div>
           </form>
         </CardContent>
       </Card>
 
-      {integrity && (
+      {integrity && submission?.status === "submitted" && (
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-3">
@@ -239,7 +335,8 @@ export default function SubmitPage() {
         <div>
           <h1 className="text-2xl font-semibold">Submit your project</h1>
           <p className="text-sm text-muted-foreground">
-            One submission per team, editable until judging closes.
+            Save a draft while you build, then submit before the server-side deadline. One submission
+            per team, editable until the window closes.
           </p>
         </div>
         <SubmissionContent />
