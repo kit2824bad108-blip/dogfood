@@ -1,19 +1,40 @@
 """Organizer console: the z-scored leaderboard, integrity review, audit trail and archive."""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+import csv
+import io
+
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, PlainTextResponse
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .. import archive, audit, zscore
 from ..config import settings
 from ..db import get_db
 from ..deps import client_ip, require_role
-from ..models import Assignment, AuditLog, Score, Submission, Team, User
-from ..schemas import JudgeCreateRequest
+from ..models import (
+    Assignment,
+    AuditLog,
+    Prize,
+    Rubric,
+    Score,
+    ScoreCriterion,
+    Submission,
+    Team,
+    Track,
+    User,
+)
+from ..schemas import JudgeCreateRequest, PrizeCreateRequest, RubricUpdateRequest, TrackCreateRequest
 from ..security import hash_password
-from ..services import assign_submission_to_new_judge, score_counts
+from ..services import (
+    active_rubric,
+    assign_submission_to_new_judge,
+    normalized_criteria,
+    overall_prizes,
+    score_counts,
+    tracks_with_prizes,
+)
 from .submissions import serialize_submission
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -38,6 +59,14 @@ def _title_map(db: Session) -> dict[int, dict]:
     return {sid: {"title": title, "repo_url": repo, "team": team} for sid, title, repo, team in rows}
 
 
+def _track_map(db: Session) -> dict[int, str]:
+    rows = db.execute(
+        select(Submission.id, Track.name)
+        .join(Track, Track.id == Submission.track_id)
+    ).all()
+    return {sid: name for sid, name in rows}
+
+
 @router.get("/overview")
 def overview(db: Session = Depends(get_db), user: User = Depends(require_role(*ADMIN_ROLES))) -> dict:
     counts = score_counts(db)
@@ -52,7 +81,9 @@ def overview(db: Session = Depends(get_db), user: User = Depends(require_role(*A
             "participants": len(db.scalars(select(User).where(User.role == "participant")).all()),
             "judges": len(db.scalars(select(User).where(User.role == "judge")).all()),
             "teams": len(db.scalars(select(Team)).all()),
-            "submissions": len(submissions),
+            "tracks": len(db.scalars(select(Track)).all()),
+            "submissions": sum(1 for s in submissions if s.status == "submitted"),
+            "drafts": sum(1 for s in submissions if s.status == "draft"),
             "flagged_for_review": sum(1 for s in submissions if s.integrity_flagged),
             "assignments": len(db.scalars(select(Assignment.id)).all()),
             **counts,
@@ -240,4 +271,411 @@ def make_archive_markdown(
     return PlainTextResponse(
         archive.to_markdown(bundle),
         headers={"Content-Disposition": 'attachment; filename="RESULTS.md"'},
+    )
+
+
+# ── Event configuration: tracks, prizes and rubric weights ────────────────────
+
+
+def _slugify(value: str) -> str:
+    cleaned = "".join(ch.lower() if ch.isalnum() else "-" for ch in value.strip())
+    return "-".join(part for part in cleaned.split("-") if part) or "track"
+
+
+@router.get("/tracks")
+def list_tracks(db: Session = Depends(get_db), user: User = Depends(require_role(*ADMIN_ROLES))) -> dict:
+    return {"tracks": tracks_with_prizes(db), "overall_prizes": overall_prizes(db)}
+
+
+@router.post("/tracks")
+def create_track(
+    payload: TrackCreateRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role(*ADMIN_ROLES)),
+) -> dict:
+    if db.scalar(select(Track).where(Track.name == payload.name)) is not None:
+        raise HTTPException(status_code=409, detail="A track with that name already exists")
+    slug = _slugify(payload.slug or payload.name)
+    if db.scalar(select(Track).where(Track.slug == slug)) is not None:
+        raise HTTPException(status_code=409, detail="A track with that slug already exists")
+
+    track = Track(
+        name=payload.name,
+        slug=slug,
+        description=payload.description,
+        prize_pool=payload.prize_pool,
+        display_order=payload.display_order,
+    )
+    db.add(track)
+    db.flush()
+    audit.record(
+        db,
+        "track.created",
+        actor=user,
+        entity="track",
+        entity_id=track.id,
+        ip=client_ip(request),
+        details={"slug": slug},
+    )
+    db.commit()
+    return {"track": {"id": track.id, "name": track.name, "slug": track.slug}}
+
+
+@router.post("/prizes")
+def create_prize(
+    payload: PrizeCreateRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role(*ADMIN_ROLES)),
+) -> dict:
+    if payload.track_id is not None and db.get(Track, payload.track_id) is None:
+        raise HTTPException(status_code=404, detail="Track not found")
+    prize = Prize(
+        track_id=payload.track_id,
+        rank=payload.rank,
+        title=payload.title,
+        description=payload.description,
+    )
+    db.add(prize)
+    db.flush()
+    audit.record(
+        db,
+        "prize.created",
+        actor=user,
+        entity="prize",
+        entity_id=prize.id,
+        ip=client_ip(request),
+        details={"track_id": payload.track_id, "rank": payload.rank},
+    )
+    db.commit()
+    return {"prize": {"id": prize.id, "title": prize.title, "rank": prize.rank}}
+
+
+@router.get("/rubric")
+def get_rubric(db: Session = Depends(get_db), user: User = Depends(require_role(*ADMIN_ROLES))) -> dict:
+    rubric = active_rubric(db)
+    return {
+        "rubric": {
+            "id": rubric.id if rubric else None,
+            "name": rubric.name if rubric else None,
+            "criteria": [
+                {
+                    "key": entry["key"],
+                    "label": entry["label"],
+                    "weight": entry["weight"],
+                    "percent": round(entry["fraction"] * 100, 2),
+                }
+                for entry in normalized_criteria(rubric)
+            ],
+        }
+    }
+
+
+@router.post("/rubric")
+def update_rubric(
+    payload: RubricUpdateRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role(*ADMIN_ROLES)),
+) -> dict:
+    """Replace the active rubric.
+
+    Existing verdicts keep the rubric they were filed against (`scores.rubric_id`),
+    so re-weighting never silently rewrites history.
+    """
+    keys = [entry.key for entry in payload.criteria]
+    if len(set(keys)) != len(keys):
+        raise HTTPException(status_code=400, detail="Criterion keys must be unique")
+
+    for existing in db.scalars(select(Rubric).where(Rubric.is_active.is_(True))).all():
+        existing.is_active = False
+
+    rubric = Rubric(
+        name=payload.name,
+        criteria=[
+            {"key": entry.key, "label": entry.label, "weight": float(entry.weight)}
+            for entry in payload.criteria
+        ],
+        is_active=True,
+    )
+    db.add(rubric)
+    db.flush()
+    audit.record(
+        db,
+        "rubric.updated",
+        actor=user,
+        entity="rubric",
+        entity_id=rubric.id,
+        ip=client_ip(request),
+        details={"criteria": rubric.criteria},
+    )
+    db.commit()
+    return {
+        "rubric": {
+            "id": rubric.id,
+            "name": rubric.name,
+            "criteria": [
+                {
+                    "key": entry["key"],
+                    "label": entry["label"],
+                    "weight": entry["weight"],
+                    "percent": round(entry["fraction"] * 100, 2),
+                }
+                for entry in normalized_criteria(rubric)
+            ],
+        }
+    }
+
+
+# ── Judge progress ───────────────────────────────────────────────────────────
+
+
+def _judging_progress(db: Session) -> list[dict]:
+    submissions = list(
+        db.scalars(select(Submission.id).where(Submission.status == "submitted")).all()
+    )
+    total = len(submissions)
+    rows = []
+    for judge in db.scalars(select(User).where(User.role == "judge").order_by(User.id)).all():
+        assigned = (
+            db.scalar(
+                select(func.count(Assignment.id))
+                .join(Submission, Submission.id == Assignment.submission_id)
+                .where(Assignment.judge_id == judge.id, Submission.status == "submitted")
+            )
+            or 0
+        )
+        scores = db.scalars(select(Score).where(Score.judge_id == judge.id)).all()
+        technical = sum(1 for score in scores if score.technical_score is not None)
+        presentation = sum(1 for score in scores if score.presentation_score is not None)
+        stamps = [
+            stamp
+            for score in scores
+            for stamp in (score.technical_submitted_at, score.presentation_submitted_at)
+            if stamp is not None
+        ]
+        rows.append(
+            {
+                "judge_id": judge.id,
+                "name": judge.name or judge.email,
+                "email": judge.email,
+                "assigned": assigned,
+                "technical_done": technical,
+                "technical_pending": max(0, assigned - technical),
+                "presentation_done": presentation,
+                "percent": round(technical / assigned * 100, 1) if assigned else 0.0,
+                "last_activity": max(stamps).isoformat() if stamps else None,
+            }
+        )
+    done = sum(row["technical_done"] for row in rows)
+    expected = sum(row["assigned"] for row in rows)
+    return {
+        "submissions": total,
+        "judges": rows,
+        "totals": {
+            "expected_technical_verdicts": expected,
+            "technical_verdicts": done,
+            "outstanding": max(0, expected - done),
+            "percent": round(done / expected * 100, 1) if expected else 0.0,
+        },
+    }
+
+
+@router.get("/judging-progress")
+def judging_progress(
+    db: Session = Depends(get_db), user: User = Depends(require_role(*ADMIN_ROLES))
+) -> dict:
+    return _judging_progress(db)
+
+
+# ── CSV export ───────────────────────────────────────────────────────────────
+
+
+def _csv_response(filename: str, header: list[str], rows: list[list]) -> Response:
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, lineterminator="\n")
+    writer.writerow(header)
+    writer.writerows(rows)
+    return Response(
+        content=buffer.getvalue(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+def _audit_export(db: Session, user: User, request: Request, name: str, rows: int) -> None:
+    audit.record(
+        db,
+        "export.csv",
+        actor=user,
+        entity="export",
+        entity_id=name,
+        ip=client_ip(request),
+        details={"rows": rows},
+    )
+    db.commit()
+
+
+@router.get("/export/leaderboard.csv")
+def export_leaderboard(
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role(*ADMIN_ROLES)),
+) -> Response:
+    records = _records(db)
+    titles = _title_map(db)
+    tracks = _track_map(db)
+    normalized = {r.submission_id: r for r in zscore.leaderboard(records)}
+    raw = {r.submission_id: r for r in zscore.raw_leaderboard(records)}
+    movement = zscore.rank_changes(records)
+
+    ordered = sorted(normalized.values(), key=lambda row: row.rank)
+    rows = []
+    for result in ordered:
+        meta = titles.get(result.submission_id, {})
+        raw_row = raw.get(result.submission_id)
+        rows.append(
+            [
+                result.rank,
+                result.submission_id,
+                meta.get("title") or "",
+                meta.get("team") or "",
+                tracks.get(result.submission_id) or "",
+                meta.get("repo_url") or "",
+                result.display,
+                round(result.z, 4),
+                raw_row.display if raw_row else "",
+                raw_row.rank if raw_row else "",
+                movement.get(result.submission_id, 0),
+                result.judges,
+            ]
+        )
+
+    _audit_export(db, user, request, "leaderboard.csv", len(rows))
+    return _csv_response(
+        "axion-leaderboard.csv",
+        [
+            "rank",
+            "submission_id",
+            "project",
+            "team",
+            "track",
+            "repo_url",
+            "axion_score",
+            "z_score",
+            "raw_average",
+            "raw_rank",
+            "rank_movement",
+            "judges",
+        ],
+        rows,
+    )
+
+
+@router.get("/export/scores.csv")
+def export_scores(
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role(*ADMIN_ROLES)),
+) -> Response:
+    """One row per judge x submission: raw verdict, that judge's calibration, z."""
+    records = _records(db)
+    titles = _title_map(db)
+    tracks = _track_map(db)
+    stats = zscore.judge_statistics(records)
+
+    judges = {judge.id: judge for judge in db.scalars(select(User)).all()}
+    criteria_labels = [entry["label"] for entry in normalized_criteria(active_rubric(db))]
+    criteria_rows: dict[int, dict[str, int]] = {}
+    for row in db.scalars(select(ScoreCriterion)).all():
+        criteria_rows.setdefault(row.score_id, {})[row.label or row.key] = row.value
+
+    header = [
+        "submission_id",
+        "project",
+        "team",
+        "track",
+        "judge_id",
+        "judge_name",
+        "judge_email",
+        "technical_score",
+        "judge_raw_mean",
+        "judge_raw_sigma",
+        "z_score",
+        *[f"criterion:{label}" for label in criteria_labels],
+        "presentation_score",
+        "technical_submitted_at",
+        "presentation_submitted_at",
+    ]
+
+    rows = []
+    scores = db.scalars(select(Score).order_by(Score.submission_id, Score.judge_id)).all()
+    for score in scores:
+        if score.technical_score is None:
+            continue
+        meta = titles.get(score.submission_id, {})
+        judge = judges.get(score.judge_id)
+        stat = stats.get(score.judge_id)
+        values = criteria_rows.get(score.id, {})
+        rows.append(
+            [
+                score.submission_id,
+                meta.get("title") or "",
+                meta.get("team") or "",
+                tracks.get(score.submission_id) or "",
+                score.judge_id,
+                (judge.name or judge.email) if judge else "",
+                judge.email if judge else "",
+                score.technical_score,
+                round(stat.raw_mean, 4) if stat else "",
+                round(stat.raw_sigma, 4) if stat else "",
+                round(zscore.judge_z(float(score.technical_score), stat), 4) if stat else "",
+                *[values.get(label, "") for label in criteria_labels],
+                score.presentation_score if score.presentation_score is not None else "",
+                score.technical_submitted_at.isoformat() if score.technical_submitted_at else "",
+                score.presentation_submitted_at.isoformat() if score.presentation_submitted_at else "",
+            ]
+        )
+
+    _audit_export(db, user, request, "scores.csv", len(rows))
+    return _csv_response("axion-scores.csv", header, rows)
+
+
+@router.get("/export/judging-progress.csv")
+def export_judging_progress(
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role(*ADMIN_ROLES)),
+) -> Response:
+    progress = _judging_progress(db)
+    rows = [
+        [
+            row["judge_id"],
+            row["name"],
+            row["email"],
+            row["assigned"],
+            row["technical_done"],
+            row["technical_pending"],
+            row["presentation_done"],
+            row["percent"],
+            row["last_activity"] or "",
+        ]
+        for row in progress["judges"]
+    ]
+    _audit_export(db, user, request, "judging-progress.csv", len(rows))
+    return _csv_response(
+        "axion-judging-progress.csv",
+        [
+            "judge_id",
+            "judge",
+            "email",
+            "assigned",
+            "technical_done",
+            "technical_pending",
+            "presentation_done",
+            "percent_technical",
+            "last_activity",
+        ],
+        rows,
     )

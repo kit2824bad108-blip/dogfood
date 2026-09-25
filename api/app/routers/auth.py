@@ -19,7 +19,7 @@ from ..config import settings
 from ..db import get_db
 from ..deps import client_ip, optional_user
 from ..models import User
-from ..schemas import LoginRequest, RegisterRequest
+from ..schemas import DevLoginRequest, LoginRequest, RegisterRequest
 from ..security import hash_password, sign_session, verify_password
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -29,6 +29,16 @@ GITHUB_TOKEN_URL = "https://github.com/login/oauth/access_token"
 GITHUB_USER_URL = "https://api.github.com/user"
 OAUTH_STATE_COOKIE = "axion_oauth_state"
 MIN_PASSWORD_LENGTH = 8
+
+# Offline mode accounts. `admin@axion.local` / `password` is the documented
+# pair for a Wi-Fi-free judging session; the same password works for every role
+# because these accounts only exist while MOCK_GITHUB or SEED_DEMO is on.
+DEV_ACCOUNTS: dict[str, tuple[str, str]] = {
+    "admin": ("admin@axion.local", "Axion Admin"),
+    "judge": ("judge@axion.local", "Axion Judge"),
+    "participant": ("hacker@axion.local", "Axion Hacker"),
+}
+DEV_PASSWORD = "password"
 
 
 def oauth_redirect_uri() -> str:
@@ -67,14 +77,95 @@ def me(user: User | None = Depends(optional_user)) -> dict:
 
 
 @router.get("/status")
-def auth_status() -> dict:
+def auth_status(db: Session = Depends(get_db)) -> dict:
     return {
         "github_oauth_enabled": settings.github_oauth_enabled,
         "event_name": settings.event_name,
         "event_start": settings.event_start.isoformat(),
         "event_end": settings.event_end.isoformat(),
         "mock_github": settings.mock_github,
+        "local_dev_login": settings.local_dev_login,
+        # Emails only — the shared demo password is documented in the README and
+        # in .env.example, never served over an endpoint. Each entry is the
+        # account the matching one-click button will actually sign in as.
+        "demo_accounts": _resolved_dev_accounts(db) if settings.local_dev_login else [],
     }
+
+
+def _resolved_dev_accounts(db: Session) -> list[dict]:
+    """What the one-click buttons would do, resolved against real rows."""
+    resolved = []
+    for role in DEV_ACCOUNTS:
+        preferred = DEV_ACCOUNTS[role][0]
+        user = db.scalar(select(User).where(User.email == preferred))
+        if user is None:
+            user = db.scalar(select(User).where(User.role == role).order_by(User.id))
+        resolved.append(
+            {
+                "role": role,
+                "email": user.email if user else preferred,
+                "name": (user.name or user.email) if user else DEV_ACCOUNTS[role][1],
+                "seeded": user is not None,
+            }
+        )
+    return resolved
+
+
+def _dev_user(db: Session, role: str) -> User:
+    """Find (or provision) the offline account for a role."""
+    preferred = DEV_ACCOUNTS[role][0]
+    user = db.scalar(select(User).where(User.email == preferred))
+    if user is not None:
+        return user
+    by_role = db.scalar(select(User).where(User.role == role).order_by(User.id))
+    if by_role is not None:
+        return by_role
+
+    email, name = DEV_ACCOUNTS[role]
+    user = User(email=email, name=name, role=role, password_hash=hash_password(DEV_PASSWORD))
+    db.add(user)
+    db.flush()
+    return user
+
+
+@router.post("/dev-login")
+def dev_login(
+    payload: DevLoginRequest,
+    request: Request,
+    response: Response,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Offline sign-in with zero external calls.
+
+    Enabled only when the deployment is already in demo mode (MOCK_GITHUB or
+    SEED_DEMO). Disabled deployments get a 403, so this can never become a
+    silent backdoor in a real event.
+    """
+    if not settings.local_dev_login:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Local dev login is disabled (set MOCK_GITHUB=true or SEED_DEMO=true)",
+        )
+
+    if payload.email:
+        user = db.scalar(select(User).where(User.email == payload.email.strip().lower()))
+        if user is None:
+            raise HTTPException(status_code=404, detail="No seeded account with that email")
+    else:
+        user = _dev_user(db, payload.role)
+
+    _set_session(response, user.id)
+    audit.record(
+        db,
+        "auth.dev_login",
+        actor=user,
+        entity="user",
+        entity_id=user.id,
+        ip=client_ip(request),
+        details={"role": user.role, "offline": True},
+    )
+    db.commit()
+    return {"authenticated": True, "user": public_user(user), "offline": True}
 
 
 @router.post("/register")

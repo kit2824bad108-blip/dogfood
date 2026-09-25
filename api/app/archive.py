@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from . import zscore
 from .config import settings
-from .models import Assignment, AuditLog, Score, Submission, Team, TeamMember, User
+from .models import Assignment, AuditLog, Score, Submission, Team, TeamMember, Track, User
 
 BUNDLE_VERSION = 1
 
@@ -34,7 +34,11 @@ def build_bundle(db: Session) -> dict:
     records = _records(db)
 
     teams = {team.id: team for team in db.scalars(select(Team)).all()}
-    submissions = {s.id: s for s in db.scalars(select(Submission)).all()}
+    all_submissions = db.scalars(select(Submission)).all()
+    # Drafts never entered the event, so they are counted but not ranked.
+    submissions = {s.id: s for s in all_submissions if s.status == "submitted"}
+    draft_count = len(all_submissions) - len(submissions)
+    tracks = {track.id: track.name for track in db.scalars(select(Track)).all()}
     members: dict[int, list[str]] = {}
     for member in db.scalars(select(TeamMember)).all():
         user = db.get(User, member.user_id)
@@ -58,6 +62,7 @@ def build_bundle(db: Session) -> dict:
                 "title": submission.title,
                 "team": team.name if team else None,
                 "members": members.get(submission.team_id, []),
+                "track": tracks.get(submission.track_id),
                 "repo_url": submission.repo_url,
                 "docs_url": submission.docs_url,
                 "demo_url": submission.demo_url,
@@ -126,6 +131,7 @@ def build_bundle(db: Session) -> dict:
         "totals": {
             "teams": len(teams),
             "submissions": len(submissions),
+            "drafts": draft_count,
             "judges": len(judges),
             "judge_verdicts": len(records),
             "assignments": len(db.scalars(select(Assignment.id)).all()),
@@ -178,6 +184,7 @@ def to_markdown(bundle: dict) -> str:
             f"### {row['axion_rank']}. {row['title']}{flag}",
             "",
             f"- Team: {row['team']}",
+            f"- Track: {row.get('track') or 'unassigned'}",
             f"- Repository: {row['repo_url']}",
         ]
         if row["demo_url"]:

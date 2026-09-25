@@ -28,13 +28,71 @@ from .audit import record
 from .config import settings
 from .db import Base, SessionLocal, engine
 from .github import check_commit_integrity
-from .models import Assignment, Score, Submission, Team, TeamMember, User
+from .models import (
+    Assignment,
+    Prize,
+    Rubric,
+    Score,
+    ScoreCriterion,
+    Submission,
+    Team,
+    TeamMember,
+    Track,
+    User,
+)
 from .security import hash_password
 
 RNG_SEED = 42
 
 ADMIN_EMAIL = "admin@axion.dev"
 ADMIN_PASSWORD = "axion-admin"
+
+# Offline demo accounts. `admin@axion.local` / `password` is the documented
+# pair for a judging session with the Wi-Fi off; these accounts only exist
+# alongside SEED_DEMO=true.
+#
+# There is deliberately no `judge@axion.local`: the judge role resolves to the
+# first seeded calibrated judge, and adding a sixth account with the judge role
+# would put a permanent zero-verdict row in the calibration table — and, worse,
+# silently join every new assignment. One-click "Login as Judge" therefore signs
+# in as Dana Disciplined, who has a full set of filed verdicts to look at.
+DEV_ACCOUNTS = [
+    ("admin@axion.local", "Axion Admin", "admin"),
+    ("hacker@axion.local", "Axion Hacker", "participant"),
+]
+DEV_PASSWORD = "password"
+
+# Tracks and prizes are organiser configuration, not code.
+TRACKS = [
+    ("AI & Machine Learning", "ai-ml", "Models, agents and applied inference.", "$10,000", 0),
+    ("Web3 & Trust", "web3", "On-chain, cryptographic and verifiability tooling.", "$10,000", 1),
+    ("Developer Tools", "devtools", "Everything that makes other engineers faster.", "$5,000", 2),
+]
+
+TRACK_PRIZES = [
+    ("ai-ml", 1, "Best AI project", "Highest Axion score in the track."),
+    ("ai-ml", 2, "Runner-up, AI", "Second place in the track."),
+    ("web3", 1, "Best Web3 project", "Highest Axion score in the track."),
+    ("web3", 2, "Runner-up, Web3", "Second place in the track."),
+    ("devtools", 1, "Best developer tool", "Highest Axion score in the track."),
+]
+
+OVERALL_PRIZES = [
+    (1, "Grand Prize", "Best Axion-normalized score across every track."),
+    (2, "Runner-up", "Second place overall."),
+]
+
+DEFAULT_RUBRIC_NAME = "Default technical rubric"
+DEFAULT_CRITERIA = [
+    {"key": "innovation", "label": "Innovation", "weight": 30.0},
+    {"key": "code_quality", "label": "Code Quality", "weight": 70.0},
+]
+# Why the seeded per-criterion values simply mirror the technical verdict: the
+# derived score is the weight-normalised mean of the criteria, so mirroring them
+# keeps every seeded score — and therefore the crafted Quiet Craft vs Flashy Demo
+# flip that this seed exists to demonstrate — byte-for-byte identical to the
+# numbers in README.md and JUDGING.md.
+CRITERIA_MIRROR_VERDICT = True
 
 JUDGE_PROFILES = [
     # email local part, display name, mean, sigma
@@ -115,6 +173,43 @@ def seed(reset: bool = False) -> dict:
         )
         db.add(admin)
 
+        # Offline accounts: same roles, `.local` addresses, shared password.
+        for email, name, role in DEV_ACCOUNTS:
+            db.add(User(email=email, name=name, role=role, password_hash=hash_password(DEV_PASSWORD)))
+
+        # Tracks, prizes and the active rubric are organiser configuration.
+        tracks: list[Track] = []
+        for name, slug, description, prize_pool, order in TRACKS:
+            track = Track(
+                name=name,
+                slug=slug,
+                description=description,
+                prize_pool=prize_pool,
+                display_order=order,
+            )
+            db.add(track)
+            tracks.append(track)
+        db.flush()
+
+        track_by_slug = {track.slug: track for track in tracks}
+        for slug, rank, title, description in TRACK_PRIZES:
+            db.add(
+                Prize(
+                    track_id=track_by_slug[slug].id,
+                    rank=rank,
+                    title=title,
+                    description=description,
+                )
+            )
+        for rank, title, description in OVERALL_PRIZES:
+            db.add(Prize(track_id=None, rank=rank, title=title, description=description))
+
+        rubric = Rubric(
+            name=DEFAULT_RUBRIC_NAME, criteria=list(DEFAULT_CRITERIA), is_active=True
+        )
+        db.add(rubric)
+        db.flush()
+
         judges: list[User] = []
         for local, name, _mu, _sigma in JUDGE_PROFILES:
             judge = User(
@@ -157,6 +252,12 @@ def seed(reset: bool = False) -> dict:
             for participant in participants[index * 5 : index * 5 + 5]:
                 db.add(TeamMember(team_id=team.id, user_id=participant.id))
 
+        # Put the offline demo hacker on a team so the participant flow is
+        # walkable with no network at all.
+        dev_hacker = db.scalar(select(User).where(User.email == "hacker@axion.local"))
+        if dev_hacker is not None:
+            db.add(TeamMember(team_id=teams[0].id, user_id=dev_hacker.id))
+
         submissions: list[Submission] = []
         for index, (team, title) in enumerate(zip(teams, PROJECT_TITLES)):
             slug = title.lower().replace(" ", "-").replace("&", "and")
@@ -168,6 +269,9 @@ def seed(reset: bool = False) -> dict:
                 demo_url=f"https://{slug}.axion-demo.dev",
                 video_url=f"https://youtu.be/axion-demo-{index + 1}",
                 summary=f"{title} — a demo submission for the Axion seed dataset.",
+                track_id=tracks[index % len(tracks)].id,
+                status="submitted",
+                submitted_at=datetime.now(timezone.utc) - timedelta(hours=6),
             )
             db.add(submission)
             submissions.append(submission)
@@ -238,18 +342,29 @@ def seed(reset: bool = False) -> dict:
             for judge_index, judge in enumerate(judges):
                 technical = technical_scores[(project_index, judge_index)]
                 presentation = _clip(technical + score_rng.gauss(0.4, 0.9))
-                db.add(
-                    Score(
-                        submission_id=submission.id,
-                        judge_id=judge.id,
-                        technical_score=technical,
-                        technical_comment="Seeded technical verdict.",
-                        presentation_score=presentation,
-                        presentation_comment="Seeded presentation verdict.",
-                        technical_submitted_at=datetime.now(timezone.utc) - timedelta(hours=5),
-                        presentation_submitted_at=datetime.now(timezone.utc) - timedelta(hours=4),
-                    )
+                score = Score(
+                    submission_id=submission.id,
+                    judge_id=judge.id,
+                    technical_score=technical,
+                    technical_comment="Seeded technical verdict.",
+                    presentation_score=presentation,
+                    presentation_comment="Seeded presentation verdict.",
+                    technical_submitted_at=datetime.now(timezone.utc) - timedelta(hours=5),
+                    presentation_submitted_at=datetime.now(timezone.utc) - timedelta(hours=4),
+                    rubric_id=rubric.id,
                 )
+                db.add(score)
+                db.flush()
+                for entry in DEFAULT_CRITERIA:
+                    db.add(
+                        ScoreCriterion(
+                            score_id=score.id,
+                            key=entry["key"],
+                            label=entry["label"],
+                            weight=float(entry["weight"]),
+                            value=technical if CRITERIA_MIRROR_VERDICT else _clip(technical),
+                        )
+                    )
                 verdicts += 1
 
         record(
@@ -269,6 +384,9 @@ def seed(reset: bool = False) -> dict:
             "participants": len(participants),
             "submissions": len(submissions),
             "verdicts": verdicts,
+            "tracks": [track.slug for track in tracks],
+            "rubric": DEFAULT_RUBRIC_NAME,
+            "dev_accounts": [email for email, _name, _role in DEV_ACCOUNTS],
         }
 
 

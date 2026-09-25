@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import re
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -48,6 +48,15 @@ class SubmissionUpsertRequest(BaseModel):
     demo_url: Optional[str] = Field(default=None, max_length=500)
     video_url: Optional[str] = Field(default=None, max_length=500)
     summary: Optional[str] = Field(default=None, max_length=2000)
+    track_id: Optional[int] = Field(default=None, ge=1)
+    # "draft" work in progress is invisible to judging; "submitted" enters the
+    # event (integrity check + judge assignment).
+    status: Literal["draft", "submitted"] = "submitted"
+
+
+class CriterionScore(BaseModel):
+    key: str = Field(min_length=1, max_length=60)
+    value: int = Field(ge=1, le=10)
 
 
 class ScoreUpsertRequest(BaseModel):
@@ -56,6 +65,41 @@ class ScoreUpsertRequest(BaseModel):
     technical_comment: Optional[str] = Field(default=None, max_length=4000)
     presentation_score: Optional[int] = Field(default=None, ge=1, le=10)
     presentation_comment: Optional[str] = Field(default=None, max_length=4000)
+    # Per-criterion values for the active rubric. When present they decide the
+    # technical score (weight-normalised mean) instead of a bare integer.
+    criteria: Optional[list[CriterionScore]] = Field(default=None, max_length=20)
+
+
+class TrackCreateRequest(BaseModel):
+    name: str = Field(min_length=2, max_length=120)
+    slug: Optional[str] = Field(default=None, max_length=120)
+    description: Optional[str] = Field(default=None, max_length=2000)
+    prize_pool: Optional[str] = Field(default=None, max_length=120)
+    display_order: int = Field(default=0, ge=0, le=1000)
+
+
+class PrizeCreateRequest(BaseModel):
+    title: str = Field(min_length=2, max_length=255)
+    track_id: Optional[int] = Field(default=None, ge=1)
+    rank: int = Field(default=1, ge=1, le=100)
+    description: Optional[str] = Field(default=None, max_length=2000)
+
+
+class RubricCriterionInput(BaseModel):
+    key: str = Field(min_length=1, max_length=60)
+    label: str = Field(min_length=1, max_length=120)
+    weight: float = Field(gt=0, le=1000)
+
+
+class RubricUpdateRequest(BaseModel):
+    name: str = Field(default="Default technical rubric", min_length=2, max_length=120)
+    criteria: list[RubricCriterionInput] = Field(min_length=1, max_length=20)
+
+
+class DevLoginRequest(BaseModel):
+    role: Literal["admin", "judge", "participant"] = "admin"
+    # Optional escape hatch: sign in as one specific seeded account.
+    email: Optional[str] = Field(default=None, max_length=255)
 
 
 class JudgeCreateRequest(BaseModel):

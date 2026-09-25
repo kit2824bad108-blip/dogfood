@@ -55,11 +55,24 @@ class Settings:
     github_client_secret: str | None
     github_token: str | None
     mock_github: bool
+    seed_demo: bool
+    local_dev_login_override: bool
     api_public_url: str
 
     @property
     def github_oauth_enabled(self) -> bool:
         return bool(self.github_client_id and self.github_client_secret)
+
+    @property
+    def local_dev_login(self) -> bool:
+        """Offline sign-in for demos and air-gapped judging.
+
+        Gated on the two flags that already mean "this is not a production
+        deployment": MOCK_GITHUB and SEED_DEMO. A judge who turns off their
+        Wi-Fi can still get in, and a real deployment cannot accidentally
+        expose a passwordless login. See THREAT-MODEL.md.
+        """
+        return self.local_dev_login_override or self.mock_github or self.seed_demo
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -82,6 +95,8 @@ class Settings:
             github_client_secret=_env("GITHUB_CLIENT_SECRET"),
             github_token=_env("GITHUB_TOKEN"),
             mock_github=_env_bool("MOCK_GITHUB", False),
+            seed_demo=_env_bool("SEED_DEMO", False),
+            local_dev_login_override=_env_bool("LOCAL_DEV_LOGIN", False),
             api_public_url=_env("API_PUBLIC_URL", "http://localhost:8000") or "",
         )
 

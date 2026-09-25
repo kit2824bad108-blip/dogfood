@@ -14,8 +14,14 @@ from sqlalchemy.orm import Session
 from .. import audit
 from ..db import get_db
 from ..deps import client_ip, require_role
-from ..models import Assignment, Score, Submission, Team, User
+from ..models import Assignment, Score, ScoreCriterion, Submission, Team, User
 from ..schemas import ScoreUpsertRequest
+from ..services import (
+    active_rubric,
+    ensure_default_rubric,
+    normalized_criteria,
+    weighted_technical_score,
+)
 
 router = APIRouter(prefix="/api/judging", tags=["judging"])
 
@@ -36,7 +42,9 @@ def _score(db: Session, judge_id: int, submission_id: int) -> Score | None:
     )
 
 
-def _technical_view(submission: Submission, team: Team | None, score: Score | None) -> dict:
+def _technical_view(
+    submission: Submission, team: Team | None, score: Score | None, criteria: dict[str, int] | None = None
+) -> dict:
     """Everything a judge may see before their technical verdict is filed."""
     return {
         "id": submission.id,
@@ -46,7 +54,7 @@ def _technical_view(submission: Submission, team: Team | None, score: Score | No
         "docs_url": submission.docs_url,
         "summary": submission.summary,
         "presentation_unlocked": bool(score and score.technical_score is not None),
-        "score": serialize_score(score),
+        "score": serialize_score(score, criteria),
         "commit_integrity": {
             "flagged": submission.integrity_flagged,
             "pct_in_window": submission.integrity_pct_in_window,
@@ -54,7 +62,16 @@ def _technical_view(submission: Submission, team: Team | None, score: Score | No
     }
 
 
-def serialize_score(score: Score | None) -> dict | None:
+def _criteria_values(db: Session, score: Score | None) -> dict[str, int]:
+    if score is None:
+        return {}
+    rows = db.scalars(
+        select(ScoreCriterion).where(ScoreCriterion.score_id == score.id)
+    ).all()
+    return {row.key: row.value for row in rows}
+
+
+def serialize_score(score: Score | None, criteria: dict[str, int] | None = None) -> dict | None:
     if score is None:
         return None
     return {
@@ -68,6 +85,32 @@ def serialize_score(score: Score | None) -> dict | None:
         "presentation_submitted_at": score.presentation_submitted_at.isoformat()
         if score.presentation_submitted_at
         else None,
+        "rubric_id": score.rubric_id,
+        "criteria": criteria or {},
+    }
+
+
+def _public_rubric(db: Session) -> dict:
+    """The rubric as a judge needs it.
+
+    Every rubric payload in the API carries the same four fields (key, label,
+    weight, percent) so a client cannot end up with a shape that is only *mostly*
+    the same — a missing `weight` here once made the weighted-score preview
+    render NaN in the browser.
+    """
+    rubric = active_rubric(db)
+    return {
+        "id": rubric.id if rubric else None,
+        "name": rubric.name if rubric else None,
+        "criteria": [
+            {
+                "key": entry["key"],
+                "label": entry["label"],
+                "weight": entry["weight"],
+                "percent": round(entry["fraction"] * 100, 2),
+            }
+            for entry in normalized_criteria(rubric)
+        ],
     }
 
 
@@ -84,7 +127,7 @@ def my_assignments(
             Score,
             (Score.submission_id == Assignment.submission_id) & (Score.judge_id == Assignment.judge_id),
         )
-        .where(Assignment.judge_id == user.id)
+        .where(Assignment.judge_id == user.id, Submission.status == "submitted")
         .order_by(Submission.id)
     ).all()
 
@@ -104,12 +147,16 @@ def my_assignments(
             }
         )
 
+    technical_done = sum(1 for a in assignments if a["technical_submitted"])
     return {
         "assignments": assignments,
+        "rubric": _public_rubric(db),
         "progress": {
             "total": len(assignments),
-            "technical_done": sum(1 for a in assignments if a["technical_submitted"]),
+            "technical_done": technical_done,
+            "technical_pending": len(assignments) - technical_done,
             "presentation_done": sum(1 for a in assignments if a["presentation_submitted"]),
+            "percent_technical": round(technical_done / len(assignments) * 100, 1) if assignments else 0.0,
         },
     }
 
@@ -126,7 +173,11 @@ def submission_detail(
     if submission is None:
         raise HTTPException(status_code=404, detail="Submission not found")
     team = db.get(Team, submission.team_id)
-    return {"submission": _technical_view(submission, team, _score(db, user.id, submission_id))}
+    mine = _score(db, user.id, submission_id)
+    return {
+        "submission": _technical_view(submission, team, mine, _criteria_values(db, mine)),
+        "rubric": _public_rubric(db),
+    }
 
 
 @router.get("/submissions/{submission_id}/presentation")
@@ -158,7 +209,7 @@ def presentation_detail(
             "demo_url": submission.demo_url,
             "video_url": submission.video_url,
             "summary": submission.summary,
-            "score": serialize_score(score),
+            "score": serialize_score(score, _criteria_values(db, score)),
         }
     }
 
@@ -172,7 +223,11 @@ def upsert_score(
 ) -> dict:
     if user.role != "admin" and _assignment(db, user.id, payload.submission_id) is None:
         raise HTTPException(status_code=403, detail="You are not assigned to this submission")
-    if payload.technical_score is None and payload.presentation_score is None:
+    if (
+        payload.technical_score is None
+        and payload.presentation_score is None
+        and not payload.criteria
+    ):
         raise HTTPException(status_code=400, detail="Provide a technical or presentation score")
 
     submission = db.get(Submission, payload.submission_id)
@@ -188,6 +243,52 @@ def upsert_score(
     from datetime import datetime, timezone
 
     now = datetime.now(timezone.utc)
+
+    derived_technical: int | None = None
+    if payload.criteria:
+        # Materialise the default rubric if the organiser never configured one,
+        # so every derived score carries the weights that produced it.
+        rubric = active_rubric(db) or ensure_default_rubric(db)
+        criteria = normalized_criteria(rubric)
+        known = {entry["key"]: entry for entry in criteria}
+        unknown = [entry.key for entry in payload.criteria if entry.key not in known]
+        if unknown:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unknown rubric criteria: {', '.join(sorted(unknown))}",
+            )
+        values = {entry.key: entry.value for entry in payload.criteria}
+        derived_technical = weighted_technical_score(criteria, values)
+        if derived_technical is None:
+            raise HTTPException(status_code=400, detail="Score at least one rubric criterion")
+
+        existing = {
+            row.key: row
+            for row in db.scalars(
+                select(ScoreCriterion).where(ScoreCriterion.score_id == score.id)
+            ).all()
+        }
+        for entry in criteria:
+            if entry["key"] not in values:
+                continue
+            row = existing.pop(entry["key"], None)
+            if row is None:
+                row = ScoreCriterion(score_id=score.id, key=entry["key"])
+                db.add(row)
+            row.label = entry["label"]
+            row.weight = entry["weight"]
+            row.value = values[entry["key"]]
+        for orphan in existing.values():
+            db.delete(orphan)
+        score.rubric_id = rubric.id
+        db.flush()
+
+    effective_technical_request = (
+        derived_technical if derived_technical is not None else payload.technical_score
+    )
+
+    if effective_technical_request is not None:
+        payload = payload.model_copy(update={"technical_score": effective_technical_request})
 
     if payload.technical_score is not None:
         previous = score.technical_score
@@ -206,6 +307,11 @@ def upsert_score(
                 "submission_id": submission.id,
                 "previous": previous,
                 "value": payload.technical_score,
+                "rubric_id": score.rubric_id,
+                # The per-criterion inputs are recorded so a later change to the
+                # rubric cannot retroactively rewrite how a verdict was reached.
+                "criteria": {entry.key: entry.value for entry in (payload.criteria or [])},
+                "technical_score_derived": derived_technical is not None,
             },
         )
     elif payload.technical_comment is not None and score.technical_score is not None:
@@ -243,6 +349,7 @@ def upsert_score(
 
     db.commit()
     return {
-        "score": serialize_score(score),
+        "score": serialize_score(score, _criteria_values(db, score)),
+        "technical_score_derived": derived_technical,
         "presentation_unlocked": score.technical_score is not None,
     }
