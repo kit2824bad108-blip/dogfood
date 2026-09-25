@@ -1,12 +1,115 @@
-# The Axion scoring model
+# Judging in Axion — assignment, scoring, normalization
 
-This document explains what Axion computes, why it is defensible, and where it deliberately stops. The
-implementation is `api/app/zscore.py` — pure functions with no framework or database imports, so every
-claim below is provable in `api/tests/test_zscore.py`.
+How a hackathon is judged end to end: who scores what, against which criteria, and what happens to those
+numbers afterwards. Every claim here is enforced in code and provable from the test suite — the
+normalization engine is `api/app/zscore.py`, pure functions with no framework or database imports, so every
+claim below is checkable in `api/tests/test_zscore.py`.
+
+| Section | Covers |
+| ------- | ------ |
+| [1](#1-judge-assignment-strategy) | Judge assignment strategy |
+| [2](#2-scoring-methodology) | Scoring methodology, blind tiers, weighted rubric |
+| [3](#3-the-problem-with-averaging) | Why averaging fails |
+| [4](#4-the-core-idea) | The normalization method |
+| [5](#5-estimating-each-judges-mean-and-spread) | Estimating each judge's mean and spread |
+| [6](#6-worked-example--the-headline-claim) | Worked example: the harsh 6 versus the generous 8 |
+| [7](#7-the-normalization-proof--the-seeded-demo) | **Normalization proof** — the seeded demo |
+| [8](#8-what-is-deliberately-not-normalized) | What is deliberately not normalized |
+| [9](#9-threats-to-validity) | Threats to validity |
 
 ---
 
-## 1. The problem with averaging
+## 1. Judge assignment strategy
+
+**Every judge scores every submitted project.** No round-robin, no random subsets, no specialisation by
+track.
+
+That is a statistical requirement, not a convenience. A Z-score is only meaningful relative to the
+distribution it was standardized against, so two judges' z-scores can only be averaged together if their
+verdict sets **overlap**. Give Judge A projects 1–5 and Judge B projects 6–10 with no shared project and
+both judges are centred on their own private baseline — comparing them is meaningless, no matter how good
+the normalization.
+
+At hackathon scale full coverage is cheap: 10 projects × 5 judges = 50 verdicts, each judge reading ten
+repositories. Axion therefore makes full coverage the default and keeps it true as the event changes shape:
+
+| Event | Assignment behaviour | Where |
+| ----- | -------------------- | ----- |
+| A project is submitted | Every judge gets an assignment | `services.assign_judges` |
+| A judge is created | They are assigned every already-submitted project | `services.assign_submission_to_new_judge` |
+| Self-healing | `POST /api/admin/assignments/backfill` re-derives any missing pair | `routers/admin.py` |
+
+Three properties of the assignment model are deliberate:
+
+- **Assignments are per (judge, project) pair and unique.** The `assignments` table has a unique constraint
+  on the pair, so a retry cannot double-assign or inflate a verdict count.
+- **Drafts are never assigned.** A project with `status = 'draft'` has not entered the event; judge
+  assignment happens on the transition to `submitted`.
+- **An assignment is not a verdict.** Being assigned creates the right to score, nothing more. Coverage is
+  visible on the organiser console (**Judging progress**) so an unchecked judge is caught before the
+  results are announced, not after.
+
+At larger scale, the honest way to keep z-scores comparable is an overlapping block design plus a
+connected comparison graph, and coverage warnings when any project has fewer than two judges. Axion does not
+implement that; instead the reconciliation endpoint reports anything short of full coverage, and the admin
+console surfaces it as outstanding work.
+
+## 2. Scoring methodology
+
+Judging happens in two tiers, and the order between them is enforced by the API rather than by etiquette.
+
+### Tier 1 — technical, and it comes first
+
+A judge sees the repository, the documentation link, the summary and the Commit Integrity signal. They do
+**not** see the demo URL or the video URL. Scoring against those artifacts before the code has been read is
+what makes demo-driven judging possible, so the presentation tier is withheld until that judge's technical
+verdict has been filed:
+
+```
+GET /api/judging/submissions/{id}/presentation
+  -> 403  "Submit the technical evaluation before the presentation is unlocked"
+```
+
+That `403` is issued by the API, not by the interface. Calling the endpoint with `curl`, with a session
+cookie, and with the right role still returns `403`. The blur in the browser is cosmetic; the gate is not.
+The one exception is an admin, who can audit any submission.
+
+### Tier 1 is scored against a weighted rubric
+
+A single 1–10 technical score asks a judge to collapse four different judgements into one hop. Axion stores
+the parts and derives the whole:
+
+- the active rubric is a row in `rubrics`, `criteria` being a JSON list of `{key, label, weight}`;
+- the default rubric is **Innovation 30% / Code Quality 70%**;
+- judges score each criterion 1–10 and those values are stored individually in `score_criteria`;
+- the technical verdict is the **weight-normalized mean** of the criterion values, clamped to 1–10.
+
+Weights are relative — 30/70, 3/7 and 0.3/0.7 are the same rubric — and the organiser can change them at any
+time from **Console → Rubric**. Changing them does **not** rewrite history: each verdict records the
+`rubric_id` it was filed against, and the audit entry keeps the individual criterion values, so a later
+re-weighting can never retroactively change how a project was scored.
+
+Returning a single integer from the rubric is the one non-obvious decision here. The Z-score engine
+consumes exactly one number per verdict, and that contract is what makes the normalization proof below
+stable; rubrics changed the way judges *arrive* at a number, not the way the number is normalized.
+
+### Tier 2 — presentation, recorded but not ranked
+
+After Tier 1 is filed, the demo and video unlock for that judge and they file a second 1–10 score with its
+own timestamp. It is stored, published in the archive, and shown to organisers as context — but it does not
+move the ranking. Section 8 explains why.
+
+### Everything is written down
+
+Every verdict, every revision, every rubric change and every export lands in the append-only `audit_logs`
+table with an actor, a timestamp and a client IP. A score filed twice logs `score.technical_submitted` then
+`score.technical_modified`, with the previous value and the new one. In Postgres a trigger rejects `UPDATE`
+and `DELETE` on that table, so the trail cannot be edited after the fact by anyone, including an
+administrator with database access.
+
+---
+
+## 3. The problem with averaging
 
 A raw average treats judges as interchangeable instruments. They are not.
 
@@ -16,7 +119,7 @@ B. Averaged with the rest, the project is punished purely for *which judge happe
 
 Averaging measures the grader, not the work.
 
-## 2. The core idea
+## 4. The core idea
 
 Standardize each verdict against that judge's own distribution, then average the standardized verdicts:
 
@@ -36,7 +139,7 @@ display = 50 + 10·z      (clamped to [0, 100])
 
 `z = 0` means "exactly what this judge expected". Positive means "better than this judge's average".
 
-## 3. Estimating each judge's mean and spread
+## 5. Estimating each judge's mean and spread
 
 Two numbers have to be estimated per judge, and they need different treatment. Both are computed over the
 verdicts *within this event*.
@@ -64,8 +167,8 @@ judge_sigma = sqrt( w_var·raw_sigma² + (1 − w_var)·global_sigma² )     whe
 **Why so weak?** Because a narrow spread is *information*, not noise. A judge who grades every project 4
 or 5 is telling you something precise when they hand out a 6. Shrinking their sigma up toward the pool
 would discard exactly the signal that makes normalization useful — it would treat a disciplined grader as
-an unreliable one. This is the single most consequential decision in the model, and section 6 shows the
-effect on real data.
+an unreliable one. This is the single most consequential decision in the model, and
+[section 7](#7-the-normalization-proof--the-seeded-demo) shows the effect on the seeded event.
 
 ### Degenerate cases, handled explicitly rather than blended
 
@@ -77,7 +180,7 @@ effect on real data.
 | `effective_sigma` under `SIGMA_FLOOR` (0.05) | treated as non-discriminating | Guards the final division. |
 | No verdicts at all | `{}` | No projects, no ranking. |
 
-## 4. Worked example — the headline claim
+## 6. Worked example — the headline claim
 
 Two judges score five shared projects, then one unshared project each. Judge 1 grades on a 3–6 band;
 Judge 2 on a 7–9 band.
@@ -115,21 +218,7 @@ Result:
 
 The naive average ranks the raw 8 first. Axion ranks the harsh 6 first, and lifts it five places.
 
-## 5. Why every judge scores every project
-
-Z-scores are only comparable across judges whose verdicts **overlap**. If Judge A scores projects 1–5 and
-Judge B scores projects 6–10 with no shared project, both judges' z-scores are centred on their own private
-baselines and comparing them is meaningless.
-
-At hackathon scale this is easy to satisfy honestly: 10 projects × 5 judges = 50 verdicts. Axion therefore
-assigns **every judge to every submission** — new judges are backfilled onto all existing submissions and
-vice versa. `MATH.md` is the reason that is a design rule rather than a coincidence.
-
-For larger events, the fix is to anchor judges through shared projects and compute a connected comparison
-graph; Axion does not attempt that, and the admin console warns when any project has fewer than two
-judges.
-
-## 6. The seeded demo, and what it demonstrates
+## 7. The normalization proof — the seeded demo
 
 The seed script (`api/app/seed.py`) ships a dataset shaped to make the mechanism visible. Five judges:
 
@@ -163,7 +252,20 @@ The parameters were not hand-waved: they were selected by searching the space ag
 module and keeping the configuration that maximised the normalized gap subject to the naive average
 genuinely favouring the demo. `python -m app.seed` prints the table above.
 
-## 7. What is deliberately *not* normalized
+### Reproducing the proof yourself
+
+```bash
+cd api && python -m app.seed          # prints the raw-vs-normalized table above
+docker compose exec api python -m pytest tests/test_zscore.py -q   # the math, in isolation
+make acceptance                      # end-to-end, tier by tier -> acceptance-report.txt
+```
+
+The seeded verdicts also carry per-criterion `score_criteria` rows whose values mirror the technical
+verdict, so the derived weighted score equals the stored one exactly. That is deliberate: it keeps the
+normalization proof above byte-for-byte identical to what the seed prints, while still exercising the
+rubric path that a real judge walks through.
+
+## 8. What is deliberately *not* normalized
 
 **Presentation scores are recorded, archived, and excluded from the ranking.** The Axion score is computed
 from technical verdicts only.
@@ -177,7 +279,7 @@ If an event wants a weighted composite, it is a small change: normalize each tie
 function, then combine with explicit weights (for example `0.7·z_technical + 0.3·z_presentation`) and
 publish the weights alongside the results.
 
-## 8. Threats to validity
+## 9. Threats to validity
 
 Stated plainly, because a scoring system that hides its weaknesses is not defensible:
 

@@ -42,16 +42,21 @@ view over the API. One schema, one migration history, one place where invariants
 
 ## Schema
 
-Seven tables, no ORM relationships (explicit joins, so there is no lazy-loading surprise).
+Eleven tables, no ORM relationships (explicit joins, so there is no lazy-loading surprise). The full column
+list, ERD and constraint rationale live in [DATA-MODEL.md](./DATA-MODEL.md).
 
 | Table | Purpose | Notable constraints |
 | ----- | ------- | ------------------- |
 | `users` | Every human, discriminated by `role` ∈ {`admin`, `judge`, `participant`} | unique `email`, unique `github_id`; `password_hash` nullable so OAuth-only users exist without one |
 | `teams` | A competing team | unique `name`, unique `invite_code` |
 | `team_members` | Membership | **unique `user_id`** — one team per person |
-| `submissions` | One per team, with Commit Integrity fields | **unique `team_id`** |
+| `tracks` | A competition category (AI, Web3, DevTools…) | unique `name`, unique `slug` |
+| `prizes` | A prize, per track or overall (`track_id` null) | `rank` orders them |
+| `submissions` | One per team, with track, draft/submitted state and Commit Integrity fields | **unique `team_id`**, indexed `status` |
 | `assignments` | Judge × submission pairs | unique `(judge_id, submission_id)` |
-| `scores` | A judge's staged verdict on one submission | unique `(judge_id, submission_id)` |
+| `rubrics` | Weighted criteria as JSON, one active row | only one `is_active` at a time |
+| `scores` | A judge's staged verdict on one submission | unique `(judge_id, submission_id)`, `rubric_id` for provenance |
+| `score_criteria` | Per-criterion values behind a verdict | unique `(score_id, key)` |
 | `audit_logs` | Append-only event trail | `action` and `created_at` indexed |
 
 ### The staged score row
@@ -60,6 +65,14 @@ Seven tables, no ORM relationships (explicit joins, so there is no lazy-loading 
 (`technical_submitted_at`, `presentation_submitted_at`). The row is created on the first write and updated
 on later ones. "Presentation unlocked" is derived, not stored: it means `technical_score IS NOT NULL` for
 that judge and submission. Deriving it means the lock cannot drift out of sync with the data.
+
+### The weighted rubric collapses to one integer
+
+Judges score each rubric criterion (`score_criteria`), and `services.weighted_technical_score` turns those
+values into the single integer stored in `scores.technical_score`. Both are persisted: the parts so an
+organiser can ask how a project did on code quality specifically, and the whole because the Z-score engine
+consumes one number per verdict. Re-weighting the rubric inserts a new active row and never rewrites a
+verdict already filed — `scores.rubric_id` records which weights produced which score.
 
 ### Scoring is computed, never stored
 
@@ -135,15 +148,24 @@ existing verdict (`score.technical_modified`, with previous and new values) — 
 
 | Area | Endpoints |
 | ---- | --------- |
-| Auth | `GET /api/auth/me`, `GET /api/auth/status`, `POST /api/auth/{register,login,logout}`, `GET /api/auth/github/{login,callback}` |
+| Auth | `GET /api/auth/me`, `GET /api/auth/status`, `POST /api/auth/{register,login,logout}`, `POST /api/auth/dev-login` *(offline mode)*, `GET /api/auth/github/{login,callback}` |
+| Public | `GET /api/event`, `GET /api/gallery?q=&track=` |
 | Teams | `POST /api/teams`, `POST /api/teams/join`, `GET /api/teams/me`, `GET /api/teams` *(admin)* |
-| Submissions | `POST /api/submissions`, `GET /api/submissions/me`, `GET /api/submissions` *(admin)*, `POST /api/submissions/{id}/recheck` *(admin)* |
-| Judging | `GET /api/judging/assignments`, `GET /api/judging/submissions/{id}`, `GET /api/judging/submissions/{id}/presentation`, `POST /api/judging/scores` |
-| Admin | `GET /api/admin/{overview,leaderboard,flagged,audit}`, `POST /api/admin/judges`, `POST /api/admin/assignments/backfill`, `POST /api/admin/archive[/markdown]` |
-| Meta | `GET /api/health` |
+| Submissions | `POST /api/submissions` *(draft or submitted)*, `GET /api/submissions/me`, `GET /api/submissions` *(admin)*, `POST /api/submissions/{id}/recheck` *(admin)* |
+| Judging | `GET /api/judging/assignments`, `GET /api/judging/submissions/{id}`, `GET /api/judging/submissions/{id}/presentation`, `POST /api/judging/scores` *(accepts per-criterion values)* |
+| Admin | `GET /api/admin/{overview,leaderboard,flagged,audit,judging-progress,tracks,rubric}`, `POST /api/admin/{judges,tracks,prizes,rubric,assignments/backfill}`, `POST /api/admin/archive[/markdown]` |
+| Export | `GET /api/admin/export/{leaderboard,scores,judging-progress}.csv` — every export writes an `export.csv` audit entry |
+| Meta | `GET /api/health`, `GET /api/docs`, `GET /api/openapi.json`, `GET /api/redoc` |
 
 Responses are plain dicts assembled in the routers; only request payloads are validated with Pydantic.
 Responses are read-only projections with no lazy loading, and the extra layer buys nothing here.
+
+### The public surface is deliberate
+
+`/api/event` and `/api/gallery` are the only unauthenticated reads with substance. The gallery returns
+submitted projects — title, team, summary, repository and docs — and **never** returns `demo_url` or
+`video_url`. Publishing the presentation tier anonymously would make the blind gate pointless, since a
+judge could read it from a second door. See THREAT-MODEL.md.
 
 ## Commit Integrity
 
@@ -168,6 +190,21 @@ integrity, and per-verdict z-scores with the judge statistics used to produce th
 Archiving mutates nothing. Downloading it is safe mid-event, and the database stays up until an operator
 chooses to spin it down.
 
+## Frontend
+
+Next.js 15 App Router, React 19, Tailwind with hand-written primitives in `web/components/ui` — no component
+library, because six primitives is less code than one dependency.
+
+- **Theming.** Every colour is a token in `web/app/globals.css`, with a light set on `:root` and a dark set
+  on `.dark`. `theme-provider.tsx` keeps `localStorage` and `prefers-color-scheme` in sync; a blocking inline
+  script in `layout.tsx` applies the class before first paint, so there is no flash. `theme-toggle.tsx`
+  renders both icons and lets CSS pick one, which means the right icon is correct before hydration.
+- **Settings menu.** `settings-menu.tsx` is a fixed bottom-left control (theme, event window, environment
+  flags, API docs, sign out). It is reachable from every route, including the public ones.
+- **Live server state.** Pages fetch from `/api/*` with `cache: "no-store"`; nothing is duplicated server
+  side, so the API stays the only source of truth. `RequireAuth` handles the redirect-and-role dance in one
+  place.
+
 ## Testing strategy
 
 `api/tests/` runs against in-memory SQLite with `MOCK_GITHUB=true`, so the suite needs no Postgres and no
@@ -180,6 +217,17 @@ network:
 - `test_github.py` — URL parsing, mock determinism, real-mode accounting with a stubbed HTTP client,
   private-repo and rate-limit paths.
 - `test_auth.py` — registration, login, sessions, role guards, team lifecycle, submission validation.
+- `test_end_to_end.py` — the seeded event, driven through the API: the crafted rank flip, grader
+  calibration, the archive bundle and role boundaries.
+- `test_event_features.py` — offline dev login, drafts and promotion, the server-side deadline (with a
+  frozen window), the public gallery's withholding rule, tracks and prizes, weighted rubrics, judge
+  progress and the CSV exports.
+
+The event window in `tests/conftest.py` is computed relative to *now*: a hard-coded date would silently
+start exercising the closed-window path instead of the open one.
+
+`api/scripts/acceptance.py` is the live counterpart — it drives a running instance over HTTP tier by tier
+and writes `acceptance-report.txt` at the repository root.
 
 SQLite is used only for speed; the models avoid Postgres-specific column types so the same code paths run
 against both. The append-only trigger is exercised by the migration, which only runs on Postgres.
