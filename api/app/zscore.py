@@ -54,6 +54,11 @@ DISPLAY_MAX = 100.0
 
 FLAG_COVERAGE_BELOW = 50.0
 
+# How many verdicts a project should carry before its normalized score is worth
+# trusting. Two is the mathematical floor (a single verdict cannot be checked
+# against anything); three is the operational target an organiser would set.
+MINIMUM_JUDGES = 3
+
 
 @dataclass(frozen=True)
 class ScoreRecord:
@@ -249,6 +254,50 @@ def rank_changes(
     }
 
 
+@dataclass(frozen=True)
+class Coverage:
+    """How much evidence exists for one project's score."""
+
+    submission_id: int
+    judges: int
+    expected: int
+    missing: int
+    provisional: bool
+
+
+def coverage_report(
+    records: Iterable[ScoreRecord],
+    *,
+    expected_by_submission: Optional[dict[int, int]] = None,
+    minimum_judges: int = MINIMUM_JUDGES,
+) -> dict[int, Coverage]:
+    """Per-project coverage, including projects with no verdicts at all.
+
+    `expected_by_submission` is the number of judges *assigned* to each project.
+    Passing it is what makes an incomplete batch visible: a project with three
+    assignments and no verdicts appears with `judges=0, missing=3, provisional`
+    rather than being absent from the leaderboard entirely, and a missing score is
+    never silently treated as a zero.
+    """
+    counts: dict[int, int] = defaultdict(int)
+    for record in records:
+        counts[record.submission_id] += 1
+
+    universe = set(counts) | set(expected_by_submission or {})
+    report: dict[int, Coverage] = {}
+    for submission_id in universe:
+        judges = counts.get(submission_id, 0)
+        expected = int((expected_by_submission or {}).get(submission_id, judges) or 0)
+        report[submission_id] = Coverage(
+            submission_id=submission_id,
+            judges=judges,
+            expected=expected,
+            missing=max(expected - judges, 0),
+            provisional=judges < minimum_judges,
+        )
+    return report
+
+
 def coverage_flags(records: Iterable[ScoreRecord], minimum_judges: int = 2) -> dict[int, int]:
     """{submission_id: judge_count} for projects below `minimum_judges`.
 
@@ -264,7 +313,10 @@ def coverage_flags(records: Iterable[ScoreRecord], minimum_judges: int = 2) -> d
 __all__ = [
     "ScoreRecord",
     "JudgeStats",
+    "Coverage",
     "ProjectResult",
+    "coverage_report",
+    "MINIMUM_JUDGES",
     "judge_statistics",
     "judge_z",
     "to_display",

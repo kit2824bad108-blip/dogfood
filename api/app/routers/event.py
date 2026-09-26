@@ -26,6 +26,7 @@ from ..services import (
     overall_prizes,
     tracks_with_prizes,
 )
+from ..timeutil import iso
 
 router = APIRouter(prefix="/api", tags=["event"])
 
@@ -138,9 +139,8 @@ def gallery(
                 "repo_url": submission.repo_url,
                 "docs_url": submission.docs_url,
                 "track": {"slug": found.slug, "name": found.name} if found else None,
-                "submitted_at": submission.submitted_at.isoformat()
-                if submission.submitted_at
-                else None,
+                "submitted_at": iso(submission.submitted_at),
+                "source_ref": submission.source_ref,
                 # demo_url / video_url intentionally omitted — see module docstring.
             }
             for submission, team, found in rows

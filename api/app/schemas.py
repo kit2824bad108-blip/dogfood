@@ -102,6 +102,28 @@ class DevLoginRequest(BaseModel):
     email: Optional[str] = Field(default=None, max_length=255)
 
 
+class ImportFixtureRequest(BaseModel):
+    """Import a fixture file. A dry run is the default, deliberately."""
+
+    path: Optional[str] = Field(default=None, max_length=500)
+    dry_run: bool = True
+
+
+class DuplicateDecisionRequest(BaseModel):
+    submission_id: int = Field(ge=1)
+    duplicate_of_submission_id: int = Field(ge=1)
+    decision: Literal["duplicate", "distinct"] = "duplicate"
+    note: Optional[str] = Field(default=None, max_length=1000)
+
+
+class BalanceAssignmentRequest(BaseModel):
+    """Balanced assignment: N reviews per project instead of every judge on everything."""
+
+    reviews_per_project: int = Field(default=3, ge=1, le=50)
+    max_projects_per_judge: Optional[int] = Field(default=None, ge=1, le=2000)
+    dry_run: bool = True
+
+
 class JudgeCreateRequest(BaseModel):
     email: str = Field(min_length=3, max_length=255)
     password: str = Field(min_length=8, max_length=200)

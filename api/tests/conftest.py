@@ -20,6 +20,12 @@ os.environ["WEB_URL"] = "http://localhost:3000"
 os.environ["SEED_DEMO"] = "false"
 os.environ["EVENT_START"] = (_NOW - timedelta(hours=48)).isoformat()
 os.environ["EVENT_END"] = (_NOW + timedelta(hours=24)).isoformat()
+# Pinned explicitly: `app.config` loads a developer's `.env` if one exists, and a
+# stray `LOCAL_DEV_LOGIN=true` there would quietly enable the passwordless login
+# that the gating tests assert is *off*. Tests must not depend on local state.
+os.environ["LOCAL_DEV_LOGIN"] = "false"
+os.environ.pop("EVENT_SOURCE", None)
+os.environ["SEED_MODE"] = "demo"
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402

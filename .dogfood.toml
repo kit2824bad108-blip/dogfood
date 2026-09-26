@@ -1,0 +1,240 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Axion self-check manifest
+#
+# This file is AXION'S OWN. It is not an organiser-provided manifest: no
+# organiser `.dogfood.toml`, `run.py` or `fixtures.json` was present in this
+# repository, in the hackathon brief, or anywhere on the machine Axion was built
+# on. Rather than claim a check that never ran, Axion ships the contract it can
+# actually honour — the routes, roles, status codes and dataset sizes an
+# acceptance checker should observe — and states plainly in the report it
+# produces that the check is its own.
+#
+# `api/scripts/dogfood_check.py` is the reference implementation of this file.
+# Any other runner can read it: it is plain TOML and contains no secrets. The
+# checker fetches its credentials from `auth.token_source`, a development-only
+# endpoint, so nothing here has to be edited per machine or committed as a token.
+# ─────────────────────────────────────────────────────────────────────────────
+
+[checker]
+name = "axion-self-check"
+manifest_version = 1
+disclosure = "Axion's own manifest-driven self-check, not an organiser-provided acceptance suite."
+
+[service]
+base_url = "http://127.0.0.1:8000"
+health = "/api/health"
+docs = "/api/docs"
+openapi = "/api/openapi.json"
+
+# The checker attaches headers. It never performs the login flow, and it never
+# embeds a token: it reads them from `token_source` at run time. That endpoint is
+# disabled unless the deployment is explicitly a demo.
+[auth]
+mode = "headers"
+token_source = "/api/dev/checker-headers"
+session_header = "Authorization"
+bearer_prefix = "Bearer "
+
+[auth.roles]
+organizer = "organizer"
+judge_a = "judge_a"
+judge_b = "judge_b"
+participant = "participant"
+
+[dataset]
+fixtures = "fixtures.json"
+seed_mode = "fixtures"
+expected_submissions = 40
+expected_judges = 12
+expect_closed_event = true
+
+[expectations]
+min_openapi_paths = 30
+gallery_withholds = ["demo_url", "video_url"]
+search_term = "mesh"
+search_expected_min = 3
+closed_event_status_class = "4xx"
+
+# ── T0 — the runtime answers at all ──────────────────────────────────────────
+
+[[checks]]
+id = "health"
+group = "T0"
+name = "Health endpoint answers"
+method = "GET"
+path = "/api/health"
+role = "public"
+expect = 200
+
+[[checks]]
+id = "openapi"
+group = "T0"
+name = "OpenAPI schema is served"
+method = "GET"
+path = "/api/openapi.json"
+role = "public"
+expect = 200
+
+[[checks]]
+id = "docs"
+group = "T0"
+name = "Interactive API docs are served"
+method = "GET"
+path = "/api/docs"
+role = "public"
+expect = 200
+
+# ── T1 — the public surface ──────────────────────────────────────────────────
+
+[[checks]]
+id = "event"
+group = "T1"
+name = "Public event configuration"
+method = "GET"
+path = "/api/event"
+role = "public"
+expect = 200
+
+[[checks]]
+id = "gallery"
+group = "T1"
+name = "Public gallery lists projects"
+method = "GET"
+path = "/api/gallery"
+role = "public"
+expect = 200
+
+[[checks]]
+id = "gallery_search"
+group = "T1"
+name = "Gallery search returns matches"
+method = "GET"
+path = "/api/gallery?q={search_term}"
+role = "public"
+expect = 200
+
+[[checks]]
+id = "dataset"
+group = "DATASET"
+name = "Instance is running the declared dataset"
+method = "GET"
+path = "/api/event"
+role = "public"
+expect = 200
+
+# The only write this check ever attempts. It is skipped rather than attempted
+# when the event is open, so a demo instance is never mutated by a read-only run.
+[[checks]]
+id = "submit_closed"
+group = "T1"
+name = "Closed event rejects submissions"
+method = "POST"
+path = "/api/submissions"
+role = "participant"
+expect_class = "4xx"
+body = { title = "Checker probe", repo_url = "https://github.com/axion-fixtures/checker-probe", status = "submitted" }
+
+# ── T2 — judging ─────────────────────────────────────────────────────────────
+
+[[checks]]
+id = "judge_assignments"
+group = "T2"
+name = "Judge sees their assignments"
+method = "GET"
+path = "/api/judging/assignments"
+role = "judge_a"
+expect = 200
+
+[[checks]]
+id = "judge_technical"
+group = "T2"
+name = "Technical view withholds presentation links"
+method = "GET"
+path = "/api/judging/submissions/{submission_id}"
+role = "judge_a"
+expect = 200
+
+[[checks]]
+id = "presentation_gate"
+group = "T2"
+name = "Presentation stays locked until the technical verdict exists"
+method = "GET"
+path = "/api/judging/submissions/{submission_id}/presentation"
+role = "judge_b"
+expect = 403
+
+[[checks]]
+id = "leaderboard"
+group = "T2"
+name = "Z-score leaderboard ranks every project"
+method = "GET"
+path = "/api/admin/leaderboard"
+role = "organizer"
+expect = 200
+
+# ── Exports: the artefact an organiser actually needs ────────────────────────
+
+[[checks]]
+id = "export_leaderboard"
+group = "T2"
+name = "Leaderboard CSV export"
+method = "GET"
+path = "/api/admin/export/leaderboard.csv"
+role = "organizer"
+expect = 200
+expect_content_type = "text/csv"
+
+[[checks]]
+id = "export_scores"
+group = "T2"
+name = "Scores CSV export"
+method = "GET"
+path = "/api/admin/export/scores.csv"
+role = "organizer"
+expect = 200
+expect_content_type = "text/csv"
+
+[[checks]]
+id = "export_progress"
+group = "T2"
+name = "Judging progress CSV export"
+method = "GET"
+path = "/api/admin/export/judging-progress.csv"
+role = "organizer"
+expect = 200
+expect_content_type = "text/csv"
+
+# ── AUTH — boundaries, checked from both sides ───────────────────────────────
+
+[[checks]]
+id = "session_identity"
+group = "AUTH"
+name = "Organizer header authenticates as an admin"
+method = "GET"
+path = "/api/auth/me"
+role = "organizer"
+expect = 200
+
+[[checks]]
+id = "participant_forbidden"
+group = "AUTH"
+name = "Participant cannot read the organizer leaderboard"
+method = "GET"
+path = "/api/admin/leaderboard"
+role = "participant"
+expect = 403
+
+[[checks]]
+id = "anonymous_forbidden"
+group = "AUTH"
+name = "Anonymous request cannot read the organizer leaderboard"
+method = "GET"
+path = "/api/admin/leaderboard"
+role = "public"
+expect = 401
+
+[[claims]]
+tiers = ["T1", "T2"]
+not_claimed = ["T3", "T4"]
+bonuses = ["normalization-proof", "api-first", "threat-model"]
+note = "T3 and T4 are not claimed and are documented as such in README.md."

@@ -38,6 +38,10 @@ class User(Base):
     password_hash: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     github_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, unique=True)
     github_login: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    # The identifier this row had in the source system it was imported from
+    # (`judge_03`, `user_0104`). Imported data keeps its own keys, so re-running
+    # an import is idempotent and a record can always be traced back.
+    source_ref: Mapped[Optional[str]] = mapped_column(String(120), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -123,6 +127,9 @@ class Submission(Base):
     submitted_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # External (often string) identifier from the imported dataset — `proj_017`.
+    # Nullable because a submission created in the app has no external source.
+    source_ref: Mapped[Optional[str]] = mapped_column(String(120), nullable=True, index=True)
     # Commit Integrity (advisory signal, never an automatic disqualification)
     integrity_pct_in_window: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     integrity_flagged: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -252,4 +259,60 @@ class AuditLog(Base):
     details: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), index=True
+    )
+
+
+class ImportBatch(Base):
+    """One import attempt, dry run or applied.
+
+    The diagnostics screen reads the latest row instead of recomputing, so what an
+    organiser reviews is exactly what was reported at import time.
+    """
+
+    __tablename__ = "import_batches"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    source: Mapped[str] = mapped_column(String(255))
+    mode: Mapped[str] = mapped_column(String(20), default="dry_run", index=True)
+    fixture_version: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    summary: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    actor_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    actor_email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+
+
+class DuplicateReview(Base):
+    """An organiser's decision about a suspected duplicate.
+
+    Detection is deterministic and recomputed on demand; only the human decision
+    is stored, so a change to the detector cannot silently rewrite history.
+    """
+
+    __tablename__ = "duplicate_reviews"
+    __table_args__ = (
+        UniqueConstraint("submission_id", "duplicate_of_submission_id", name="uq_duplicate_pair"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    submission_id: Mapped[int] = mapped_column(
+        ForeignKey("submissions.id", ondelete="CASCADE"), index=True
+    )
+    duplicate_of_submission_id: Mapped[int] = mapped_column(
+        ForeignKey("submissions.id", ondelete="CASCADE"), index=True
+    )
+    decision: Mapped[str] = mapped_column(String(20), default="duplicate")
+    note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    actor_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    actor_email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )

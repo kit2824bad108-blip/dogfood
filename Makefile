@@ -1,4 +1,4 @@
-.PHONY: up down reset logs seed venv test test-api test-web acceptance build clean
+.PHONY: up down reset logs seed venv test test-api test-web acceptance acceptance-axion build clean
 
 # The one command that matters.
 up:
@@ -35,13 +35,22 @@ test-api:
 test-web:
 	cd web && npm run typecheck
 
-# Tier-by-tier acceptance run against a running, seeded instance.
-# Writes the report the challenge asks for to the repository root.
+# The manifest-driven self-check, read from .dogfood.toml. This writes the
+# report the challenge asks for, and the report itself states on its face that
+# it is Axion's own check rather than an organiser-provided suite.
 acceptance:
 	@PY=python; \
 	if [ -x api/.venv/bin/python ]; then PY=api/.venv/bin/python; \
 	elif [ -f api/.venv/Scripts/python.exe ]; then PY=api/.venv/Scripts/python.exe; fi; \
-	$$PY api/scripts/acceptance.py | tee acceptance-report.txt
+	$$PY api/scripts/dogfood_check.py .dogfood.toml --out acceptance-report.txt
+
+# The tier-by-tier suite (T0–T4 + bonuses). Kept separately so the two artefacts
+# never overwrite each other.
+acceptance-axion:
+	@PY=python; \
+	if [ -x api/.venv/bin/python ]; then PY=api/.venv/bin/python; \
+	elif [ -f api/.venv/Scripts/python.exe ]; then PY=api/.venv/Scripts/python.exe; fi; \
+	$$PY api/scripts/acceptance.py --out acceptance-report.axion.txt
 
 build:
 	docker compose build

@@ -22,6 +22,7 @@ from ..services import (
     normalized_criteria,
     weighted_technical_score,
 )
+from ..timeutil import iso
 
 router = APIRouter(prefix="/api/judging", tags=["judging"])
 
@@ -79,12 +80,8 @@ def serialize_score(score: Score | None, criteria: dict[str, int] | None = None)
         "technical_comment": score.technical_comment,
         "presentation_score": score.presentation_score,
         "presentation_comment": score.presentation_comment,
-        "technical_submitted_at": score.technical_submitted_at.isoformat()
-        if score.technical_submitted_at
-        else None,
-        "presentation_submitted_at": score.presentation_submitted_at.isoformat()
-        if score.presentation_submitted_at
-        else None,
+        "technical_submitted_at": iso(score.technical_submitted_at),
+        "presentation_submitted_at": iso(score.presentation_submitted_at),
         "rubric_id": score.rubric_id,
         "criteria": criteria or {},
     }

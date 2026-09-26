@@ -27,6 +27,7 @@ from ..models import (
 )
 from ..schemas import JudgeCreateRequest, PrizeCreateRequest, RubricUpdateRequest, TrackCreateRequest
 from ..security import hash_password
+from ..timeutil import iso
 from ..services import (
     active_rubric,
     assign_submission_to_new_judge,
@@ -67,6 +68,17 @@ def _track_map(db: Session) -> dict[int, str]:
     return {sid: name for sid, name in rows}
 
 
+def _expected_coverage(db: Session) -> dict[int, int]:
+    """{submission_id: judges assigned}. The denominator for coverage."""
+    rows = db.execute(
+        select(Assignment.submission_id, func.count(Assignment.id))
+        .join(Submission, Submission.id == Assignment.submission_id)
+        .where(Submission.status == "submitted")
+        .group_by(Assignment.submission_id)
+    ).all()
+    return {submission_id: count for submission_id, count in rows}
+
+
 @router.get("/overview")
 def overview(db: Session = Depends(get_db), user: User = Depends(require_role(*ADMIN_ROLES))) -> dict:
     counts = score_counts(db)
@@ -99,6 +111,9 @@ def leaderboard(db: Session = Depends(get_db), user: User = Depends(require_role
     raw = {r.submission_id: r for r in zscore.raw_leaderboard(records)}
     movement = zscore.rank_changes(records)
     stats = zscore.judge_statistics(records)
+    coverage = zscore.coverage_report(
+        records, expected_by_submission=_expected_coverage(db)
+    )
 
     judges = db.scalars(select(User).where(User.role == "judge")).all()
     judge_rows = [
@@ -130,11 +145,41 @@ def leaderboard(db: Session = Depends(get_db), user: User = Depends(require_role
                 "raw_rank": raw_row.rank if raw_row else None,
                 "rank_movement": movement.get(result.submission_id, 0),
                 "judges": result.judges,
+                # Coverage is reported next to the score, never instead of it: a
+                # project rated by one judge is a provisional number, and saying so
+                # is more honest than quietly ranking it beside a project rated six.
+                "reviews_filed": coverage[result.submission_id].judges,
+                "reviews_expected": coverage[result.submission_id].expected,
+                "provisional": coverage[result.submission_id].provisional,
             }
         )
 
+    unranked = [
+        {
+            "submission_id": submission_id,
+            "title": titles.get(submission_id, {}).get("title"),
+            "team": titles.get(submission_id, {}).get("team"),
+            "reviews_expected": entry.expected,
+            "reason": "no technical verdicts filed yet",
+        }
+        for submission_id, entry in sorted(coverage.items())
+        if entry.judges == 0 and entry.expected > 0
+    ]
+    provisional = [row["submission_id"] for row in rows if row["provisional"]]
+
     return {
         "leaderboard": rows,
+        "unranked": unranked,
+        "coverage_summary": {
+            "minimum_judges": zscore.MINIMUM_JUDGES,
+            "ranked": len(rows),
+            "provisional": len(provisional),
+            "provisional_ids": provisional,
+            "unranked": len(unranked),
+            "coverage_percent": round((len(rows) - len(provisional)) / len(rows) * 100, 1)
+            if rows
+            else 0.0,
+        },
         "judges": judge_rows,
         "methodology": {
             "prior_strength": zscore.PRIOR_STRENGTH,
@@ -177,7 +222,7 @@ def audit_trail(
                 "entity_id": entry.entity_id,
                 "ip": entry.ip,
                 "details": entry.details,
-                "created_at": entry.created_at.isoformat() if entry.created_at else None,
+                "created_at": iso(entry.created_at),
             }
             for entry in entries
         ]
@@ -465,7 +510,7 @@ def _judging_progress(db: Session) -> list[dict]:
                 "technical_pending": max(0, assigned - technical),
                 "presentation_done": presentation,
                 "percent": round(technical / assigned * 100, 1) if assigned else 0.0,
-                "last_activity": max(stamps).isoformat() if stamps else None,
+                "last_activity": iso(max(stamps)) if stamps else None,
             }
         )
     done = sum(row["technical_done"] for row in rows)
@@ -489,7 +534,57 @@ def judging_progress(
     return _judging_progress(db)
 
 
-# ── CSV export ───────────────────────────────────────────────────────────────
+@router.get("/judges")
+def judge_calibration(
+    db: Session = Depends(get_db), user: User = Depends(require_role(*ADMIN_ROLES))
+) -> dict:
+    """How each judge scores, and whether their verdicts discriminate at all.
+
+    A judge who gives every project the same number contributes no ranking
+    information — the model gives them z = 0 for everything — and this is where an
+    organiser finds that out, rather than after the awards.
+    """
+    records = _records(db)
+    stats = zscore.judge_statistics(records)
+    judges = db.scalars(select(User).where(User.role == "judge").order_by(User.id)).all()
+    rows = []
+    for judge in judges:
+        entry = stats.get(judge.id)
+        if entry is None or entry.n == 0:
+            reliability = "no verdicts filed"
+        elif entry.n == 1:
+            reliability = "single verdict: dispersion borrowed from the pool"
+        elif not entry.discriminative:
+            reliability = "non-discriminative: identical verdicts across every project"
+        else:
+            reliability = "discriminative"
+        rows.append(
+            {
+                "judge_id": judge.id,
+                "name": judge.name or judge.email,
+                "email": judge.email,
+                "verdicts": entry.n if entry else 0,
+                "raw_mean": round(entry.raw_mean, 2) if entry else None,
+                "raw_sigma": round(entry.raw_sigma, 2) if entry else None,
+                "effective_mean": round(entry.effective_mean, 2) if entry else None,
+                "effective_sigma": round(entry.effective_sigma, 3) if entry else None,
+                "discriminative": entry.discriminative if entry else None,
+                "reliability": reliability,
+            }
+        )
+    return {
+        "judges": rows,
+        "totals": {
+            "judges": len(rows),
+            "verdicts": len(records),
+            "non_discriminative": sum(1 for row in rows if row["discriminative"] is False),
+            "single_verdict": sum(1 for row in rows if row["verdicts"] == 1),
+            "no_verdicts": sum(1 for row in rows if row["verdicts"] == 0),
+        },
+    }
+
+
+# ── CSV export ──────────────────────────────────────────────────────────────
 
 
 def _csv_response(filename: str, header: list[str], rows: list[list]) -> Response:
@@ -529,6 +624,9 @@ def export_leaderboard(
     normalized = {r.submission_id: r for r in zscore.leaderboard(records)}
     raw = {r.submission_id: r for r in zscore.raw_leaderboard(records)}
     movement = zscore.rank_changes(records)
+    coverage = zscore.coverage_report(
+        records, expected_by_submission=_expected_coverage(db)
+    )
 
     ordered = sorted(normalized.values(), key=lambda row: row.rank)
     rows = []
@@ -549,6 +647,9 @@ def export_leaderboard(
                 raw_row.rank if raw_row else "",
                 movement.get(result.submission_id, 0),
                 result.judges,
+                coverage[result.submission_id].judges,
+                coverage[result.submission_id].expected,
+                "provisional" if coverage[result.submission_id].provisional else "final",
             ]
         )
 
@@ -568,6 +669,9 @@ def export_leaderboard(
             "raw_rank",
             "rank_movement",
             "judges",
+            "reviews_filed",
+            "reviews_expected",
+            "confidence",
         ],
         rows,
     )

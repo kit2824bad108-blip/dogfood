@@ -12,6 +12,11 @@ import { api, downloadFile, downloadText, errorMessage } from "@/lib/api";
 import type {
   ArchiveBundle,
   AuditEntry,
+  BalancePlan,
+  DuplicateCluster,
+  ImportDiagnostics,
+  ImportSummary,
+  JudgeCalibration,
   JudgingProgress,
   Leaderboard,
   Overview,
@@ -25,6 +30,7 @@ type Tab =
   | "leaderboard"
   | "judges"
   | "integrity"
+  | "import"
   | "tracks"
   | "rubric"
   | "audit"
@@ -35,6 +41,7 @@ const TABS: Array<{ id: Tab; label: string }> = [
   { id: "leaderboard", label: "Leaderboard" },
   { id: "judges", label: "Judging progress" },
   { id: "integrity", label: "Commit review" },
+  { id: "import", label: "Import & duplicates" },
   { id: "tracks", label: "Tracks & prizes" },
   { id: "rubric", label: "Rubric" },
   { id: "audit", label: "Audit trail" },
@@ -58,6 +65,15 @@ function AdminContent() {
   const [rubric, setRubric] = useState<Rubric | null>(null);
   const [rubricRows, setRubricRows] = useState<RubricRow[]>([]);
   const [archive, setArchive] = useState<ArchiveBundle | null>(null);
+  const [diagnostics, setDiagnostics] = useState<ImportDiagnostics | null>(null);
+  const [duplicates, setDuplicates] = useState<DuplicateCluster[]>([]);
+  const [calibration, setCalibration] = useState<JudgeCalibration | null>(null);
+  const [importResult, setImportResult] = useState<ImportSummary | null>(null);
+  const [balance, setBalance] = useState<BalancePlan | null>(null);
+  const [balanceForm, setBalanceForm] = useState({
+    reviews_per_project: "3",
+    max_projects_per_judge: "",
+  });
   const [view, setView] = useState<"axion" | "raw">("axion");
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -68,18 +84,25 @@ function AdminContent() {
   const [loading, setLoading] = useState(true);
 
   const refresh = useCallback(async () => {
-    const [board, counts, flags, log, judging, trackList, rubricPayload] = await Promise.all([
-      api.get<Leaderboard>("/admin/leaderboard"),
-      api.get<Overview>("/admin/overview"),
-      api.get<{ flagged: Submission[] }>("/admin/flagged"),
-      api.get<{ entries: AuditEntry[] }>("/admin/audit?limit=100"),
-      api.get<JudgingProgress>("/admin/judging-progress"),
-      api.get<{ tracks: Track[]; overall_prizes: Array<{ id: number; rank: number; title: string }> }>(
-        "/admin/tracks",
-      ),
-      api.get<{ rubric: Rubric }>("/admin/rubric"),
-    ]);
+    const [board, counts, flags, log, judging, trackList, rubricPayload, importState, duplicateState, calibrationState] =
+      await Promise.all([
+        api.get<Leaderboard>("/admin/leaderboard"),
+        api.get<Overview>("/admin/overview"),
+        api.get<{ flagged: Submission[] }>("/admin/flagged"),
+        api.get<{ entries: AuditEntry[] }>("/admin/audit?limit=100"),
+        api.get<JudgingProgress>("/admin/judging-progress"),
+        api.get<{ tracks: Track[]; overall_prizes: Array<{ id: number; rank: number; title: string }> }>(
+          "/admin/tracks",
+        ),
+        api.get<{ rubric: Rubric }>("/admin/rubric"),
+        api.get<ImportDiagnostics>("/admin/import/diagnostics"),
+        api.get<{ clusters: DuplicateCluster[] }>("/admin/duplicates"),
+        api.get<JudgeCalibration>("/admin/judges"),
+      ]);
     setLeaderboard(board);
+    setDiagnostics(importState);
+    setDuplicates(duplicateState.clusters);
+    setCalibration(calibrationState);
     setOverview(counts);
     setFlagged(flags.flagged);
     setAudit(log.entries);
@@ -227,6 +250,7 @@ function AdminContent() {
                       <th className="py-2 pr-3 text-right">z</th>
                       <th className="py-2 pr-3 text-right">Raw avg</th>
                       <th className="py-2 pr-3 text-right">Rank ±</th>
+                      <th className="py-2 pr-3 text-right">Coverage</th>
                       <th className="py-2 text-right">Judges</th>
                     </tr>
                   </thead>
@@ -254,6 +278,14 @@ function AdminContent() {
                           >
                             {movementLabel(row.rank_movement)}
                           </td>
+                          <td className="py-2 pr-3 text-right font-mono">
+                            {row.reviews_filed ?? row.judges}/{row.reviews_expected ?? row.judges}
+                            {row.provisional && (
+                              <Badge variant="warning" className="ml-2 align-middle">
+                                provisional
+                              </Badge>
+                            )}
+                          </td>
                           <td className="py-2 text-right font-mono">{row.judges}</td>
                         </tr>
                       );
@@ -265,9 +297,27 @@ function AdminContent() {
                 {leaderboard.methodology.display_mapping} · shrinkage prior{" "}
                 {leaderboard.methodology.prior_strength} · {leaderboard.verdict_count} technical verdicts
               </p>
-              {Object.keys(leaderboard.coverage_warnings).length > 0 && (
+              {leaderboard.coverage_summary && (
+                <p className="mt-2 text-xs text-muted-foreground">
+                  {leaderboard.coverage_summary.coverage_percent}% of {leaderboard.coverage_summary.ranked} ranked
+                  projects carry the minimum {leaderboard.coverage_summary.minimum_judges} verdicts
+                  {leaderboard.coverage_summary.provisional > 0
+                    ? ` · ${leaderboard.coverage_summary.provisional} provisional`
+                    : ""}
+                </p>
+              )}
+              {(leaderboard.unranked?.length ?? 0) > 0 && (
                 <p className="mt-2 text-xs text-warning">
-                  Thin coverage (fewer than 2 judges):{" "}
+                  Unranked — assigned a judge, no verdict filed yet, so there is no score to rank (a missing
+                  score is not a zero):{" "}
+                  {leaderboard
+                    .unranked?.map((row) => `${row.title} (${row.reviews_expected} assigned)`)
+                    .join(", ")}
+                </p>
+              )}
+              {Object.keys(leaderboard.coverage_warnings).length > 0 && (
+                <p className="mt-2 text-xs text-muted-foreground">
+                  Fewer than two judges in the pool:{" "}
                   {Object.entries(leaderboard.coverage_warnings)
                     .map(([id, count]) => `#${id} (${count})`)
                     .join(", ")}
@@ -362,6 +412,59 @@ function AdminContent() {
                 </p>
               </div>
             ))}
+          </CardContent>
+        </Card>
+      )}
+
+      {tab === "judges" && calibration && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Grader calibration</CardTitle>
+            <CardDescription>
+              A judge whose verdicts never vary contributes nothing to the ranking — the model gives them z = 0
+              for every project. This is detected from the verdicts themselves, not from a label in the data.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted-foreground">
+                    <th className="py-2 pr-3">Judge</th>
+                    <th className="py-2 pr-3 text-right">Verdicts</th>
+                    <th className="py-2 pr-3 text-right">Mean</th>
+                    <th className="py-2 pr-3 text-right">Sigma</th>
+                    <th className="py-2 pr-3 text-right">Effective sigma</th>
+                    <th className="py-2">Reliability</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {calibration.judges.map((judge) => (
+                    <tr key={judge.judge_id} className="border-b border-border/50">
+                      <td className="py-2 pr-3">{judge.name}</td>
+                      <td className="py-2 pr-3 text-right font-mono">{judge.verdicts}</td>
+                      <td className="py-2 pr-3 text-right font-mono">{formatScore(judge.raw_mean)}</td>
+                      <td className="py-2 pr-3 text-right font-mono">{formatScore(judge.raw_sigma)}</td>
+                      <td className="py-2 pr-3 text-right font-mono">
+                        {judge.effective_sigma === null ? "n/a" : judge.effective_sigma.toFixed(3)}
+                      </td>
+                      <td className="py-2 text-muted-foreground">
+                        {judge.discriminative === false ? (
+                          <Badge variant="warning">{judge.reliability}</Badge>
+                        ) : (
+                          judge.reliability
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <p className="mt-3 text-xs text-muted-foreground">
+              {calibration.totals.verdicts} technical verdicts across {calibration.totals.judges} judges ·{" "}
+              {calibration.totals.non_discriminative} non-discriminative · {calibration.totals.single_verdict}{" "}
+              single-verdict · {calibration.totals.no_verdicts} with nothing filed
+            </p>
           </CardContent>
         </Card>
       )}
@@ -914,6 +1017,318 @@ function AdminContent() {
           )}
         </div>
       )}
+
+      {tab === "import" && (
+        <div className="space-y-6">
+          <Card>
+            <CardHeader>
+              <CardTitle>Dataset import</CardTitle>
+              <CardDescription>
+                {diagnostics?.fixture.present
+                  ? `Reading ${diagnostics.fixture.path}. A dry run is the default — nothing is written unless you apply it.`
+                  : "No fixtures.json in the repository root."}
+                {" "}
+                The file is Axion&apos;s own dataset, not an organiser-provided one, and it says so inside.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {diagnostics?.last_batch ? (
+                <>
+                  <p className="text-xs text-muted-foreground">
+                    Batch #{diagnostics.last_batch.id} · {diagnostics.last_batch.mode} ·{" "}
+                    {diagnostics.last_batch.source} ·{" "}
+                    {diagnostics.last_batch.created_at
+                      ? new Date(diagnostics.last_batch.created_at).toLocaleString()
+                      : "just now"}
+                  </p>
+                  <ul className="space-y-1 text-sm">
+                    {(diagnostics.last_batch.summary?.headline ?? []).map((line) => (
+                      <li key={line} className="flex items-start gap-2">
+                        <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-primary" />
+                        <span>{line}</span>
+                      </li>
+                    ))}
+                  </ul>
+                  {(diagnostics.last_batch.summary?.invalid?.length ?? 0) > 0 && (
+                    <div className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-xs">
+                      <p className="font-medium text-destructive">Rejected records — nothing was written</p>
+                      <ul className="mt-1 space-y-0.5">
+                        {diagnostics.last_batch.summary?.invalid.slice(0, 10).map((problem) => (
+                          <li key={`${problem.kind}-${problem.ref}`} className="font-mono">
+                            {problem.kind}: {problem.ref} — {problem.detail}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <p className="text-sm text-muted-foreground">Nothing has been imported yet.</p>
+              )}
+
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={busy}
+                  onClick={() =>
+                    run(async () => {
+                      const payload = await api.post<{ import: ImportSummary }>("/admin/import", {
+                        dry_run: true,
+                      });
+                      setImportResult(payload.import);
+                      setNotice(
+                        payload.import.refused
+                          ? `Import refused: ${payload.import.refused}`
+                          : "Dry run complete — nothing was written.",
+                      );
+                      await refresh();
+                    })
+                  }
+                >
+                  Dry run
+                </Button>
+                <Button
+                  size="sm"
+                  disabled={busy}
+                  onClick={() =>
+                    run(async () => {
+                      const payload = await api.post<{ import: ImportSummary }>("/admin/import", {
+                        dry_run: false,
+                      });
+                      setImportResult(payload.import);
+                      setNotice(
+                        payload.import.refused
+                          ? `Import refused: ${payload.import.refused}`
+                          : "Fixture applied.",
+                      );
+                      await refresh();
+                    })
+                  }
+                >
+                  Apply fixture
+                </Button>
+              </div>
+              {importResult?.applied && (
+                <p className="text-xs text-muted-foreground">
+                  {Object.entries(importResult.applied)
+                    .map(([key, value]) => `${key.replace(/_/g, " ")} ${value}`)
+                    .join(" · ")}
+                </p>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Coverage</CardTitle>
+              <CardDescription>
+                A missing verdict is missing, never a zero: projects below the minimum stay provisional rather
+                than being ranked as if they had scored nothing.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="grid gap-3 sm:grid-cols-4">
+                {[
+                  { label: "Projects", value: diagnostics?.live.coverage.submissions ?? 0 },
+                  { label: "Assignments", value: diagnostics?.live.coverage.assignments ?? 0 },
+                  { label: "Verdicts filed", value: diagnostics?.live.coverage.verdicts ?? 0 },
+                  { label: "Provisional", value: diagnostics?.live.coverage.provisional ?? 0 },
+                ].map((stat) => (
+                  <div key={stat.label} className="rounded-md border border-border bg-background/60 p-3">
+                    <p className="text-xs uppercase tracking-wide text-muted-foreground">{stat.label}</p>
+                    <p className="mt-1 text-lg font-semibold">{stat.value}</p>
+                  </div>
+                ))}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Coverage {diagnostics?.live.coverage.coverage_percent ?? 0}% ·{" "}
+                {diagnostics?.live.coverage.without_verdicts ?? 0} project(s) with assignments and no verdicts ·{" "}
+                {diagnostics?.live.duplicates_undecided ?? 0} duplicate decision(s) outstanding
+              </p>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Duplicate review queue</CardTitle>
+              <CardDescription>
+                Detected from normalised repository URLs and title fingerprints — comparator only, so casing,
+                a trailing slash and a .git suffix are not treated as different projects. Detection is recomputed
+                on every load; only your decision is stored, and nothing is deleted: a confirmed duplicate is
+                flagged.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {duplicates.length === 0 && (
+                <p className="text-sm text-muted-foreground">No duplicate candidates right now.</p>
+              )}
+              {duplicates.map((cluster) => (
+                <div
+                  key={`${cluster.submission_id}-${cluster.duplicate_of_submission_id}`}
+                  className="flex flex-wrap items-start justify-between gap-3 border-b border-border/60 pb-3 last:border-0"
+                >
+                  <div className="space-y-1">
+                    <p className="text-sm">
+                      <span className="font-medium">{cluster.title}</span>{" "}
+                      <span className="text-muted-foreground">({cluster.team})</span> looks like{" "}
+                      <span className="font-medium">{cluster.duplicate_of_title}</span>{" "}
+                      <span className="text-muted-foreground">({cluster.duplicate_of_team})</span>
+                    </p>
+                    <p className="font-mono text-xs text-muted-foreground">{cluster.reason}</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Badge
+                      variant={
+                        cluster.decision === "duplicate"
+                          ? "warning"
+                          : cluster.decision === "distinct"
+                            ? "secondary"
+                            : "outline"
+                      }
+                    >
+                      {cluster.decision}
+                    </Badge>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={busy}
+                      onClick={() =>
+                        run(async () => {
+                          await api.post("/admin/duplicates", {
+                            submission_id: cluster.submission_id,
+                            duplicate_of_submission_id: cluster.duplicate_of_submission_id,
+                            decision: "distinct",
+                          });
+                          setNotice("Recorded as distinct projects.");
+                          await refresh();
+                        })
+                      }
+                    >
+                      Distinct
+                    </Button>
+                    <Button
+                      size="sm"
+                      disabled={busy}
+                      onClick={() =>
+                        run(async () => {
+                          await api.post("/admin/duplicates", {
+                            submission_id: cluster.submission_id,
+                            duplicate_of_submission_id: cluster.duplicate_of_submission_id,
+                            decision: "duplicate",
+                          });
+                          setNotice("Confirmed as a duplicate. Both entries are kept and flagged.");
+                          await refresh();
+                        })
+                      }
+                    >
+                      Confirm
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Balanced assignment</CardTitle>
+              <CardDescription>
+                Every judge on every project is the right model at ten projects and the wrong one at five
+                hundred. This plans a target number of reviews per project with a balanced load, then reports
+                what it would do before it does anything. The demo dataset is untouched: it is deliberately
+                full-coverage.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex flex-wrap items-end gap-3">
+                <div className="space-y-1">
+                  <Label htmlFor="reviews-per-project">Reviews per project</Label>
+                  <Input
+                    id="reviews-per-project"
+                    className="w-28"
+                    inputMode="numeric"
+                    value={balanceForm.reviews_per_project}
+                    onChange={(event) =>
+                      setBalanceForm({ ...balanceForm, reviews_per_project: event.target.value })
+                    }
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label htmlFor="max-projects-per-judge">Max projects per judge</Label>
+                  <Input
+                    id="max-projects-per-judge"
+                    className="w-36"
+                    inputMode="numeric"
+                    placeholder="no cap"
+                    value={balanceForm.max_projects_per_judge}
+                    onChange={(event) =>
+                      setBalanceForm({ ...balanceForm, max_projects_per_judge: event.target.value })
+                    }
+                  />
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={busy}
+                  onClick={() =>
+                    run(async () => {
+                      const payload = await api.post<BalancePlan>("/admin/assignments/balance", {
+                        reviews_per_project: Number(balanceForm.reviews_per_project) || 3,
+                        max_projects_per_judge: balanceForm.max_projects_per_judge
+                          ? Number(balanceForm.max_projects_per_judge)
+                          : null,
+                        dry_run: true,
+                      });
+                      setBalance(payload);
+                      setNotice("Computed a plan. Nothing has been written yet.");
+                    })
+                  }
+                >
+                  Plan
+                </Button>
+                <Button
+                  size="sm"
+                  disabled={busy}
+                  onClick={() =>
+                    run(async () => {
+                      const payload = await api.post<BalancePlan>("/admin/assignments/balance", {
+                        reviews_per_project: Number(balanceForm.reviews_per_project) || 3,
+                        max_projects_per_judge: balanceForm.max_projects_per_judge
+                          ? Number(balanceForm.max_projects_per_judge)
+                          : null,
+                        dry_run: false,
+                      });
+                      setBalance(payload);
+                      setNotice(`Applied the plan: ${payload.created} new assignments.`);
+                      await refresh();
+                    })
+                  }
+                >
+                  Apply plan
+                </Button>
+              </div>
+              {balance && (
+                <div className="space-y-2 text-sm">
+                  <p className="text-muted-foreground">
+                    {balance.mode === "applied"
+                      ? `Applied ${balance.created} new assignments (${balance.projected.judgments_before} → ${balance.projected.judgments_after}).`
+                      : `Would add ${balance.projected.new_assignments} assignments (${balance.projected.judgments_before} → ${balance.projected.judgments_after}).`}{" "}
+                    Coverage {balance.projected.coverage_percent}% · reviews per project{" "}
+                    {balance.projected.reviews_per_project.min}–{balance.projected.reviews_per_project.max} · judge
+                    load {balance.projected.judge_load.min}–{balance.projected.judge_load.max} ({balance.dispersion}) ·{" "}
+                    overlap components {balance.projected.components_after}{" "}
+                    {balance.projected.components_after === 1
+                      ? "(every judge is calibratable against every other through shared projects)"
+                      : "(separate clusters: verdicts are not comparable across them)"}
+                  </p>
+                  <p className="text-xs text-muted-foreground">{balance.max_projects_per_judge_note}</p>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+      )}
     </div>
   );
 }
@@ -926,7 +1341,7 @@ export default function AdminPage() {
           <h1 className="text-2xl font-semibold">Organiser console</h1>
           <p className="text-sm text-muted-foreground">
             The normalized leaderboard, judging progress, tracks and prizes, the rubric, the commit
-            review queue, the audit trail and the archive.
+            review queue, dataset import and the duplicate review queue, the audit trail and the archive.
           </p>
         </div>
         <AdminContent />

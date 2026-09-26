@@ -221,6 +221,12 @@ export type LeaderboardRow = {
   raw_rank: number;
   rank_movement: number;
   judges: number;
+  /** Verdicts actually filed for this project. */
+  reviews_filed?: number;
+  /** Judges assigned to it — the denominator coverage is measured against. */
+  reviews_expected?: number;
+  /** True while coverage is below the minimum: the score is not final. */
+  provisional?: boolean;
 };
 
 export type JudgeStat = {
@@ -232,12 +238,146 @@ export type JudgeStat = {
   discriminative: boolean | null;
 };
 
+export type UnrankedProject = {
+  submission_id: number;
+  title: string | null;
+  team: string | null;
+  reviews_expected: number;
+  reason: string;
+};
+
 export type Leaderboard = {
   leaderboard: LeaderboardRow[];
   judges: JudgeStat[];
   methodology: { prior_strength: number; sigma_floor: number; display_mapping: string };
   coverage_warnings: Record<string, number>;
   verdict_count: number;
+  unranked?: UnrankedProject[];
+  coverage_summary?: {
+    minimum_judges: number;
+    ranked: number;
+    provisional: number;
+    provisional_ids: number[];
+    unranked: number;
+    coverage_percent: number;
+  };
+};
+
+export type JudgeCalibrationRow = {
+  judge_id: number;
+  name: string;
+  email: string;
+  verdicts: number;
+  raw_mean: number | null;
+  raw_sigma: number | null;
+  effective_mean: number | null;
+  effective_sigma: number | null;
+  discriminative: boolean | null;
+  reliability: string;
+};
+
+export type JudgeCalibration = {
+  judges: JudgeCalibrationRow[];
+  totals: {
+    judges: number;
+    verdicts: number;
+    non_discriminative: number;
+    single_verdict: number;
+    no_verdicts: number;
+  };
+};
+
+/** One detected duplicate, with whatever decision an organiser has recorded. */
+export type DuplicateCluster = {
+  submission_id: number;
+  title: string;
+  team: string;
+  source_ref: string | null;
+  duplicate_of_submission_id: number;
+  duplicate_of_title: string;
+  duplicate_of_team: string;
+  duplicate_of_source_ref: string | null;
+  reason: string;
+  decision: "duplicate" | "distinct" | "undecided";
+  decided_by: string | null;
+  note: string | null;
+};
+
+/** The counters an organiser sees before trusting an import. */
+export type ImportDiagnostics = {
+  last_batch: {
+    id: number;
+    source: string;
+    mode: string;
+    fixture_version: number | null;
+    summary: ImportSummary | null;
+    actor_email: string | null;
+    created_at: string | null;
+  } | null;
+  fixture: { path: string; present: boolean; mode: string };
+  live: {
+    duplicates: number;
+    duplicates_undecided: number;
+    coverage: CoverageTotals;
+    provisional_submissions: number;
+  };
+};
+
+export type CoverageTotals = {
+  submissions: number;
+  assignments: number;
+  verdicts: number;
+  provisional: number;
+  without_verdicts: number;
+  coverage_percent: number;
+};
+
+export type ImportSummary = {
+  source?: string;
+  fixture_version?: number | null;
+  records: {
+    projects: number;
+    judges: number;
+    teams: number;
+    participants: number;
+    reviews: number;
+    assignments: number;
+  };
+  headline: string[];
+  invalid: Array<{ kind: string; ref: string; detail: string }>;
+  duplicate_candidates: Array<{ submission: string; duplicate_of: string; reason: string }>;
+  zero_variance_judges: string[];
+  single_verdict_judges: string[];
+  incomplete_batches: Array<{ project: string; reviews: number; expected: number }>;
+  projects_without_reviews: string[];
+  minimum_coverage: number;
+  assignments_without_scores: number;
+  null_technical_comments: number;
+  null_summaries: number;
+  event_window: { starts_at: string | null; ends_at: string | null; closed: boolean };
+  mode: string;
+  applied: Record<string, number> | null;
+  refused?: string | null;
+};
+
+export type BalancePlan = {
+  mode: string;
+  created: number;
+  plan: Array<{ submission_id: number; title: string; add_judges: number[] }>;
+  projected: {
+    new_assignments: number;
+    judgments_before: number;
+    judgments_after: number;
+    reviews_per_project: { min: number; max: number; mean: number; variance: number };
+    judge_load: { min: number; max: number; mean: number; variance: number };
+    components_before: number;
+    components_after: number;
+    projects_without_assignments: number;
+    coverage_percent: number;
+  };
+  dispersion: string;
+  coverage: CoverageTotals;
+  max_projects_per_judge_note: string;
 };
 
 export type Overview = {

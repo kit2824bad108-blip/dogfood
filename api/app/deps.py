@@ -22,10 +22,28 @@ def client_ip(request: Request) -> Optional[str]:
     return None
 
 
+def session_token(request: Request) -> Optional[str]:
+    """The session token for this request, from a cookie or from a header.
+
+    The browser is cookie-based, but a checker or another service attaches the
+    token as `Authorization: Bearer <token>` (or `X-Axion-Session`) so it can use
+    the API without performing the login flow. Both forms carry the same signed
+    payload and are verified identically.
+    """
+    cookie = request.cookies.get(settings.cookie_name)
+    if cookie:
+        return cookie
+    authorization = request.headers.get("authorization")
+    if authorization and authorization.lower().startswith("bearer "):
+        return authorization[7:].strip() or None
+    explicit = request.headers.get("x-axion-session")
+    return explicit.strip() if explicit else None
+
+
 def optional_user(
     request: Request, db: Session = Depends(get_db)
 ) -> Optional[User]:
-    token = request.cookies.get(settings.cookie_name)
+    token = session_token(request)
     payload = verify_session(token, settings.secret_key)
     if not payload:
         return None

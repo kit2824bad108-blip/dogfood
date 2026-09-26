@@ -48,11 +48,16 @@ def verify_password(password: str, encoded: Optional[str]) -> bool:
     return hmac.compare_digest(candidate, expected)
 
 
-def sign_session(user_id: int, secret: str, max_age_seconds: int) -> str:
-    payload = {"uid": user_id, "exp": int(time.time()) + max_age_seconds}
+def sign_payload(payload: dict[str, Any], secret: str) -> str:
+    """Sign an arbitrary session payload. Shared by cookies and dev tokens."""
     body = _b64e(json.dumps(payload, separators=(",", ":")).encode())
     signature = hmac.new(secret.encode(), body.encode(), hashlib.sha256).digest()
     return f"{body}.{_b64e(signature)}"
+
+
+def sign_session(user_id: int, secret: str, max_age_seconds: int) -> str:
+    payload = {"uid": user_id, "exp": int(time.time()) + max_age_seconds}
+    return sign_payload(payload, secret)
 
 
 def verify_session(token: Optional[str], secret: str) -> Optional[dict[str, Any]]:

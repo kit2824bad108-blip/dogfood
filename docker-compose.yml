@@ -34,6 +34,12 @@ services:
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       MOCK_GITHUB: ${MOCK_GITHUB:-true}
       SEED_DEMO: ${SEED_DEMO:-true}
+      # demo (default, the crafted dataset every published number was computed
+      # against) or fixtures (fixtures.json: messy, and already past its deadline).
+      SEED_MODE: ${SEED_MODE:-demo}
+      # env (default) or fixtures, which takes the event window from fixtures.json
+      # so an imported closed deadline is genuinely enforced.
+      EVENT_SOURCE: ${EVENT_SOURCE:-env}
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
     ports:
       - "8000:8000"

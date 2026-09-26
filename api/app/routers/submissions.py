@@ -14,6 +14,7 @@ from ..github import parse_repo
 from ..models import Submission, Team, Track, User
 from ..schemas import SubmissionUpsertRequest
 from ..services import assign_judges, event_window, run_integrity_check, submission_window_closed
+from ..timeutil import iso
 from .teams import membership
 
 router = APIRouter(prefix="/api/submissions", tags=["submissions"])
@@ -32,19 +33,20 @@ def serialize_submission(submission: Submission, team: Team | None = None) -> di
         "summary": submission.summary,
         "track_id": submission.track_id,
         "status": submission.status,
-        "submitted_at": submission.submitted_at.isoformat() if submission.submitted_at else None,
+        # `iso()` pins the offset: SQLite hands back naive datetimes, and a bare
+        # string would be read as local time by the browser.
+        "submitted_at": iso(submission.submitted_at),
         "commit_integrity": {
             "flagged": submission.integrity_flagged,
             "pct_in_window": submission.integrity_pct_in_window,
             "source": submission.integrity_source,
             "reason": (submission.integrity_details or {}).get("reason"),
             "details": submission.integrity_details or {},
-            "checked_at": submission.integrity_checked_at.isoformat()
-            if submission.integrity_checked_at
-            else None,
+            "checked_at": iso(submission.integrity_checked_at),
         },
-        "created_at": submission.created_at.isoformat() if submission.created_at else None,
-        "updated_at": submission.updated_at.isoformat() if submission.updated_at else None,
+        "source_ref": submission.source_ref,
+        "created_at": iso(submission.created_at),
+        "updated_at": iso(submission.updated_at),
     }
 
 

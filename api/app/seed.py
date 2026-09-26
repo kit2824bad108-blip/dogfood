@@ -19,6 +19,7 @@ see `_demo_preview` (printed on seed) for the resulting flip.
 """
 from __future__ import annotations
 
+import os
 import random
 from datetime import datetime, timedelta, timezone
 
@@ -390,6 +391,70 @@ def seed(reset: bool = False) -> dict:
         }
 
 
+def seed_mode() -> str:
+    """Which dataset to seed: the crafted demo (`demo`) or the fixture file."""
+    return (os.environ.get("SEED_MODE") or "demo").strip().lower()
+
+
+def seed_fixtures(path: str | None = None) -> dict:
+    """Seed from `fixtures.json` instead of the crafted demo dataset.
+
+    Two things this deliberately does *not* do:
+
+      * it does not pretend the fixture file came from anyone but Axion — see its
+        own `note` field and README.md;
+      * it does not replace the demo dataset as the default. Every number published
+        in README.md and JUDGING.md was computed against the crafted demo seed, and
+        a fixture file whose event window is already closed is the right dataset
+        for exercising deadline enforcement, not for demonstrating a live event.
+    """
+    from . import fixtures as fixtures_module
+
+    Base.metadata.create_all(bind=engine)
+    with SessionLocal() as db:
+        if db.scalar(select(User).where(User.role == "admin")) is not None:
+            return {"skipped": True, "reason": "an admin account already exists"}
+        payload = fixtures_module.load_fixture(path)
+        summary = fixtures_module.apply_fixture(db, payload, mode="apply")
+        db.commit()
+        return {
+            "skipped": False,
+            "mode": "fixtures",
+            "source": summary.get("source"),
+            "records": summary.get("records"),
+            "applied": summary.get("applied"),
+            "headline": summary.get("headline"),
+            "closed_event": (summary.get("event_window") or {}).get("closed"),
+        }
+
+
+def _fixture_preview() -> None:
+    """Print what the fixture import found, so the mess is visible in the logs."""
+    from . import fixtures as fixtures_module
+
+    try:
+        payload = fixtures_module.load_fixture()
+    except ValueError as exc:
+        print(f"[axion] fixture preview unavailable: {exc}")
+        return
+    diagnostics = fixtures_module.diagnose(payload)
+    print("\n[axion] fixture dataset")
+    for line in diagnostics["headline"]:
+        print(f"  - {line}")
+    if diagnostics["zero_variance_judges"]:
+        print(f"  zero-variance judges: {diagnostics['zero_variance_judges']}")
+    if diagnostics["single_verdict_judges"]:
+        print(f"  single-verdict judges: {diagnostics['single_verdict_judges']}")
+    for candidate in diagnostics["duplicate_candidates"]:
+        # ASCII only: this runs under the Docker entrypoint, whose logs may not be
+        # UTF-8, and a mangled line in the startup output looks like a bug.
+        print(
+            f"  duplicate: {candidate['submission']} -> {candidate['duplicate_of']} "
+            f"({candidate['reason']})"
+        )
+    print()
+
+
 def _demo_preview() -> None:
     """Print the raw-vs-normalized comparison so the effect is visible in the logs."""
     from . import zscore
@@ -420,9 +485,17 @@ def _demo_preview() -> None:
 
 
 if __name__ == "__main__":
-    summary = seed()
-    if summary.get("skipped"):
-        print(f"[axion] seed skipped: {summary['reason']}")
+    if seed_mode() in {"fixture", "fixtures"}:
+        fixture_summary = seed_fixtures()
+        if fixture_summary.get("skipped"):
+            print(f"[axion] fixture seed skipped: {fixture_summary['reason']}")
+        else:
+            print(f"[axion] seeded fixtures {fixture_summary}")
+        _fixture_preview()
     else:
-        print(f"[axion] seeded {summary}")
-    _demo_preview()
+        summary = seed()
+        if summary.get("skipped"):
+            print(f"[axion] seed skipped: {summary['reason']}")
+        else:
+            print(f"[axion] seeded {summary}")
+        _demo_preview()

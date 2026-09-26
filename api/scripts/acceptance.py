@@ -3,7 +3,12 @@
 
     # with the stack up (docker compose up, or uvicorn app.main:app)
     python api/scripts/acceptance.py            # prints the report
-    python api/scripts/acceptance.py > acceptance-report.txt
+    python api/scripts/acceptance.py --out acceptance-report.axion.txt
+
+This suite writes `acceptance-report.axion.txt`. The repository's
+`acceptance-report.txt` belongs to the manifest-driven self-check
+(`api/scripts/dogfood_check.py` reading `.dogfood.toml`), and the two are kept
+separate so neither artefact silently overwrites the other.
 
 This is **Axion's own** acceptance suite. No organiser-provided acceptance
 script, Postman collection or test harness was present in this repository or on
@@ -17,6 +22,7 @@ environment", and every skip says why.
 """
 from __future__ import annotations
 
+import argparse
 import csv
 import io
 import json
@@ -697,6 +703,10 @@ def render(suite: Suite) -> str:
         "hackathon resources available at build time. Rather than claim a run that",
         "never happened, every line below is an observation of the running system.",
         "",
+        "The challenge's `acceptance-report.txt` is the manifest-driven self-check",
+        "(`.dogfood.toml` + api/scripts/dogfood_check.py). This file is the",
+        "tier-by-tier run, kept separate so the two artefacts never collide.",
+        "",
         f"Generated     : {started.isoformat()}",
         f"Target        : {BASE_URL}",
         f"Git commit    : {git_sha()}",
@@ -735,7 +745,7 @@ def render(suite: Suite) -> str:
         "",
         "SKIP is not PASS: a skipped check states the reason it could not be observed",
         "in this environment, and the automated pytest suite covers those paths",
-        "separately (api/tests, 82 tests).",
+        "separately (api/tests).",
         "",
         "RESULT: " + ("FAILED" if counts[FAIL] else "ALL EXECUTED CHECKS PASSED"),
         "",
@@ -743,7 +753,14 @@ def render(suite: Suite) -> str:
     return "\n".join(lines)
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Axion tier-by-tier acceptance suite.")
+    parser.add_argument(
+        "--out",
+        help="also write the report to this file as UTF-8 (it is printed to stdout regardless)",
+    )
+    args = parser.parse_args(argv)
+
     with httpx.Client(base_url=BASE_URL, timeout=TIMEOUT, follow_redirects=False) as client:
         suite = Suite(client=client)
         try:
@@ -756,6 +773,14 @@ def main() -> int:
         report = render(suite)
 
     print(report)
+
+    if args.out:
+        out_path = Path(args.out)
+        if not out_path.is_absolute:
+            out_path = REPO_ROOT / out_path
+        out_path.write_text(report + "\n", encoding="utf-8")
+        print(f"[axion] report written to {out_path}", file=sys.stderr)
+
     failures = sum(1 for result in suite.results if result.status == FAIL)
     return 1 if failures else 0
 
