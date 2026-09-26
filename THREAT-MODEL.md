@@ -174,6 +174,43 @@ real and is listed here rather than hidden.
 | Postgres | Container not ready on boot | `docker compose` healthcheck plus `depends_on: service_healthy`; the API applies migrations at start |
 | Judging integrity under offline conditions | Judge cannot log in at all | The dev-login path is the whole point: no external call is made, so the event can be judged with the network off |
 
+## Threat 7 — Development credentials, and trust in imported data
+
+### Deterministic checker credentials
+
+The acceptance checker attaches `Authorization: Bearer <token>` headers instead of performing a login
+round-trip, and those tokens are deliberately long-lived (they expire in 2100) so that a committed report
+stays reproducible. That is a real weakening of session hygiene, and it is acceptable only under the gate
+that already exists:
+
+- `GET /api/dev/checker-headers` returns **403** unless `MOCK_GITHUB`, `SEED_DEMO` or `LOCAL_DEV_LOGIN` is
+  set — the same conditions that already publish a passwordless admin login;
+- the tokens are signed with `SECRET_KEY`, so rotating that key invalidates them;
+- the API prints them once at boot **only** in a demo deployment, and `AXION_ANNOUNCE_ACCESS=false` silences
+  even that;
+- a real event is expected to run with all three flags false. If they are not, this endpoint is the least of
+  the problems.
+
+Residual risk: a demo deployment left running on a public host publishes an admin token to its own logs.
+Mitigation is deployment discipline — the same discipline the passwordless login already requires.
+
+### Trusting an imported dataset
+
+An import is a mass write performed by someone with admin rights, which makes it a privilege-escalation
+surface if the file is attacker-controlled:
+
+| Risk | Control |
+| ---- | ------- |
+| A crafted file overwrites legitimate submissions | Records are matched by `source_ref`; the import is idempotent and never deletes rows |
+| A malformed file half-imports and leaves the event inconsistent | Any invalid record refuses the **whole** import; the dry run is the default and writes nothing |
+| An import silently reopens a closed deadline | The window comes from configuration or from the dataset, never from a request |
+| A verdict is rewritten by re-importing | Re-import updates scores, and the update is an ordinary score write with an audit entry — the same trail a judge's edit leaves |
+| A duplicate is "resolved" by deleting someone's work | Nothing is deleted. A confirmed duplicate is flagged; the decision is recorded, not enforced |
+
+Residual risk: an organiser can import a dataset whose declared duplicates are wrong. That is why detection
+is recomputed from the data rather than trusted from the file, and why the two are compared in the
+diagnostics (`duplicates_declared_in_file` versus `duplicates_detected`).
+
 ## Out of scope
 
 Named so that nobody assumes coverage that is not there:

@@ -279,7 +279,36 @@ If an event wants a weighted composite, it is a small change: normalize each tie
 function, then combine with explicit weights (for example `0.7·z_technical + 0.3·z_presentation`) and
 publish the weights alongside the results.
 
-## 9. Threats to validity
+## 9. Coverage, provisional scores and balanced assignment
+
+Sections 1–8 describe an event with full coverage. The cases where coverage is *not* full need saying too,
+because the convenient answer and the honest one differ.
+
+**A missing verdict is missing, not zero.** If a project has three assigned judges and one never filed, its
+normalized score is computed from the two verdicts that exist; the third contributes nothing. The project is
+marked `provisional` in the leaderboard while its verdict count is below the minimum (3 by default). A
+project with assignments and *no* verdicts does not appear in the ranking at all — it is listed separately
+under `unranked`, with the number of judges assigned to it. Nothing anywhere substitutes 0 for a missing
+score, because a 0 would drag the average down in a way no judge voted for.
+
+**Coverage is reported next to the score, not instead of it.** The leaderboard payload, both CSV exports
+(`reviews_filed`, `reviews_expected`, `confidence`) and the organiser console all carry the count, so it is
+visible that the top project was rated by 3 of 3 judges while the second was rated by 2 of 5.
+
+**Balanced assignment.** Full coverage is right at ten projects and wrong at five hundred, where it would
+mean 20,000 judgments. `POST /api/admin/assignments/balance` plans a target number of reviews per project
+with a balanced load, greedy in this order: projects with the fewest existing assignments first; then, for
+each, the eligible judges with the smallest current load; never exceeding `max_projects_per_judge`. It
+reports what it *would* do — coverage, reviews per project, load distribution, and the number of connected
+components in the judge/project overlap graph — before anything is written, and the default is a dry run.
+Two honest notes: the cap applies to assignments the plan *adds*, so an existing load above it is reported
+rather than reduced by deleting someone's work; and more than one connected component means the ranking is
+really several separate rankings, which the response says rather than hides.
+
+The demo dataset stays full-coverage. Every number in section 7, in README.md and in the committed reports
+was computed against it, and a plan that silently rewrote those numbers would make the documentation untrue.
+
+## 10. Threats to validity
 
 Stated plainly, because a scoring system that hides its weaknesses is not defensible:
 

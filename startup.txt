@@ -103,24 +103,32 @@ Check both are alive:
 
 
 ------------------------------------------------------------------------------
-! IMPORTANT — KEEP THE SUBMISSION WINDOW OPEN
+THE SUBMISSION WINDOW
 ------------------------------------------------------------------------------
 
-EVENT_START and EVENT_END are read from the environment at API boot. If you
-leave EVENT_END unset, it defaults to "now", which means the submission
-deadline has ALREADY PASSED the moment the API starts:
+EVENT_START and EVENT_END are read from the environment at API boot, and the
+deadline is enforced against the server clock, never the browser's.
 
-    * the seeded demo projects still exist and judging still works
-    * but registering, saving a DRAFT, or submitting will be refused as late
+Leave both blank and you get a 72-hour event that is OPEN NOW — drafting,
+editing and submitting work out of the box. (A blank EVENT_END used to resolve to
+"ended at boot", which closed submissions the moment the API started; that was a
+real bug in the one-command path, and it is fixed.)
 
-That looks like a broken app when it is really a closed deadline. Always set an
-EVENT_END in the future (and an EVENT_START in the past) if you want to demo
-draft-and-edit, or the deadline check itself:
+Set them explicitly to demo a specific window:
 
     EVENT_START=2026-09-23T19:15:00+00:00     # in the past
     EVENT_END=2026-09-28T19:15:01+00:00       # in the future
 
-The deadline is enforced against the server clock, never the browser's.
+An explicit value always wins, so a closed event stays closed. /api/health
+reports the window that was actually resolved, including whether it is closed.
+
+To run the imported dataset instead — 40 projects, 12 judges, incomplete review
+batches, duplicates, and an event that has already closed:
+
+    SEED_DEMO=true SEED_MODE=fixtures EVENT_SOURCE=fixtures
+
+EVENT_SOURCE=fixtures takes the window from fixtures.json, so the imported
+deadline is genuinely enforced rather than described.
 
 
 ------------------------------------------------------------------------------
@@ -164,22 +172,44 @@ API reference.
 
 
 ------------------------------------------------------------------------------
-RUN THE ACCEPTANCE SUITE
+RUN THE ACCEPTANCE CHECKS
 ------------------------------------------------------------------------------
 
-With the stack up and seeded:
+There are two, and they write to different files so neither overwrites the other.
 
-    # against the Compose stack or a local API already running on :8000
+1. The manifest-driven self-check — the artefact the challenge asks for. It reads
+   .dogfood.toml (routes, roles, status codes, dataset expectations), fetches its
+   header credentials from the API, and never mutates a running event:
+
+    # fixture dataset booted on :8000 (see the window section above)
     AXION_API_URL=http://127.0.0.1:8000 \
-      api/.venv/Scripts/python.exe api/scripts/acceptance.py
+      api/.venv/Scripts/python.exe api/scripts/dogfood_check.py .dogfood.toml \
+      --out acceptance-report.txt
 
-    # or, with make installed:
-    make acceptance
-
-Exit code 0 means nothing failed. To save the report the challenge asks for:
+2. The tier-by-tier suite (T0–T4 plus the bonus claims), which prints a SKIP with
+   its reason wherever something cannot be observed:
 
     AXION_API_URL=http://127.0.0.1:8000 \
-      api/.venv/Scripts/python.exe api/scripts/acceptance.py > acceptance-report.txt
+      api/.venv/Scripts/python.exe api/scripts/acceptance.py \
+      --out acceptance-report.axion.txt
+
+With make installed the same two runs are:
+
+    make acceptance          # the manifest self-check
+    make acceptance-axion    # the tier suite
+
+Exit code 0 means nothing failed. Neither report is a run of an
+organiser-provided suite: no organiser .dogfood.toml, run.py or fixtures.json
+existed in this repository, in the brief, or anywhere on the build machine, and
+both reports say so in their first lines.
+
+Where the checker's credentials come from (dev deployments only):
+
+    GET /api/dev/checker-headers
+      -> organizer / judge_a / judge_b / participant as Authorization: Bearer …
+
+The API also prints those four headers once at boot. Nothing is embedded in
+.dogfood.toml, so the manifest stays valid on any machine.
 
 The unit tests are separate and need no running server:
 
@@ -203,8 +233,9 @@ Empty leaderboard or "0 projects entered"
     Same cause as above, or SEED_DEMO was not true at boot.
 
 Submissions or drafts rejected as late
-    EVENT_END is in the past (or unset, which defaults to "now").
-    See the IMPORTANT note above.
+    EVENT_END is genuinely in the past — either you set it, or EVENT_SOURCE=fixtures
+    loaded the fixture window, which closed on 2026-08-04. /api/health shows the
+    resolved window and `closed`. See the window section above.
 
 Page loads but a data panel is empty
     The web service cannot reach the API. Confirm http://127.0.0.1:8000/api/health

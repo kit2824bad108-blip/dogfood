@@ -191,7 +191,7 @@ filter; prizes hang off a track or off nothing at all (`track_id IS NULL` means 
 Both `name` and `slug` are unique, so the public `/api/event` payload and the gallery filter can address a
 track either way without collisions.
 
-### `submissions`
+### `submissions` (see also `source_ref` below)
 
 One per team, and the only place where participant content lives. Two fields carry the event state machine:
 
@@ -268,6 +268,44 @@ Representative actions: `auth.login`, `auth.login_failed`, `auth.dev_login`, `au
 `event.archived`, `event.archived_markdown`, `seed.run`.
 
 Indexes: `ix_audit_logs_action`, `ix_audit_logs_created_at`.
+
+### `import_batches`
+
+One row per import attempt, dry run or applied. The diagnostics screen reads the **latest** row rather than
+recomputing, so what an organiser reviews is exactly what was reported at import time.
+
+| Column | Notes |
+| ------ | ----- |
+| `source` | The file or generator the rows came from (`fixtures.json`, `api/scripts/build_fixtures.py`) |
+| `mode` | `dry_run` or `apply`. A dry run records the batch and writes nothing else |
+| `fixture_version` | The dataset's own version number |
+| `summary` | The whole diagnostics payload as JSON: counts, headline lines, invalid records, duplicates, coverage |
+| `actor_id` / `actor_email` | Who asked for it; `SET NULL` on user delete so history survives |
+
+### `duplicate_reviews`
+
+An organiser's decision about a suspected duplicate. **Detection is not stored**: candidates are recomputed
+deterministically on every request, so changing the detector cannot silently rewrite a past decision, and a
+decision cannot be mistaken for a detection.
+
+| Column | Notes |
+| ------ | ----- |
+| `submission_id` | The suspected duplicate |
+| `duplicate_of_submission_id` | The canonical submission it resembles |
+| `decision` | `duplicate` or `distinct` |
+| `note` | Free text; why the decision was made |
+| `actor_*` | Who decided, and when |
+
+Unique on `(submission_id, duplicate_of_submission_id)`, so re-deciding updates rather than duplicates. A
+confirmed duplicate is **flagged, never deleted**: removing a participant's work on the strength of a string
+comparison is not a decision software should make.
+
+### Source identifiers (`source_ref`)
+
+`users.source_ref` and `submissions.source_ref` carry the identifier a row had in the system it was imported
+from (`proj_017`, `judge_03`). They are nullable, because a row created inside the app has no external
+source, and they are what makes an import idempotent: importing the same file twice updates the same rows
+instead of creating a second event.
 
 ## Constraints at a glance
 

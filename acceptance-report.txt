@@ -1,160 +1,117 @@
-AXION ACCEPTANCE REPORT
+AXION SELF-CHECK REPORT (manifest-driven)
 ==============================================================================
 
-This report was produced by Axion's own acceptance suite 
-(api/scripts/acceptance.py), run against a live, seeded instance over HTTP.
+This report was produced by Axion's own manifest-driven checker
+(api/scripts/dogfood_check.py) reading .dogfood.toml.
 
-It is NOT a run of an organiser-provided acceptance suite: no such suite,
-Postman collection or test script was provided in the repository or the
-hackathon resources available at build time. Rather than claim a run that
-never happened, every line below is an observation of the running system.
+Axion's own manifest-driven self-check, not an organiser-provided acceptance suite.
 
-Generated     : 2026-09-26T03:25:27.195272+00:00
+No organiser-provided `.dogfood.toml`, `run.py` or `fixtures.json` was present in
+this repository or on the machine Axion was built on, so this is not a run of an
+organiser's acceptance suite. Every line below is an observation of a running
+instance, made through the routes the manifest declares.
+
+Generated     : 2026-09-26T05:49:28.596130+00:00
 Target        : http://127.0.0.1:8000
-Git commit    : 952b32a
+Manifest      : .dogfood.toml (axion-self-check v1)
+Dataset       : fixtures.json — declared 40 submissions, 12 judges
+Auth          : headers mode, credentials from /api/dev/checker-headers
+Git commit    : 239c53b
 Python        : 3.12.10 on Windows
-Checks        : 30 total — 27 passed, 0 failed, 3 skipped
+Checks        : 18 total — 18 passed, 0 failed, 0 skipped
 
-The mutating checks (a participant registration, a submitted project and
-three new judge accounts) change the instance they run against, so counts
-reported late in the run are larger than in a freshly seeded event. The
-normalization proof is verified by direction, not by absolute value.
-
-------------------------------------------------------------------------------
-T0 — Runtime and boundaries
-------------------------------------------------------------------------------
-
-[PASS] API answers on /api/health  (2 ms)
-       event='Axion Demo Hackathon', integrity=mock
-[PASS] Admin endpoints require authentication  (1158 ms)
-       anonymous access to all four admin routes -> 401
-[PASS] Public reads work without a session  (1647 ms)
-       event, gallery and auth status are anonymous
-[PASS] Admin signs in and holds a session  (589 ms)
-       signed in as admin@axion.dev (admin)
+The only write this check ever attempts is the closed-event submission probe,
+and it is skipped rather than attempted when the event is open, so a read-only
+run cannot mutate the instance it is measuring.
 
 ------------------------------------------------------------------------------
-T1 — Core (the minimum to be judged)
+T0 — the runtime answers
 ------------------------------------------------------------------------------
 
-[PASS] Event configuration is public: window, tracks, prizes  (47 ms)
-       3 tracks, 7 prizes, phase=open, closes 2026-09-28T19:15:01+00:00
-[SKIP] Deadline is enforced against the server clock  (30 ms)
-       submission window is still open, so the closed path cannot be observed here; the pytest suite covers it with a frozen window (tests/test_event_features.py::test_the_deadline_is_enforced_server_side)
-[PASS] Searchable public gallery  (46 ms)
-       10 projects listed, search q='Quiet' -> 1, track filter on ai-ml -> 4
-[PASS] Gallery cannot be used to bypass blind evaluation  (8 ms)
-       no demo_url or video_url in any public gallery row
-[PASS] Participant flow: register, team, invite code, one team per person  (1291 ms)
-       registered accept-participant-1790393108@axion.test, created a team, invite-code reuse refused
-[PASS] Draft submissions are private and promotable  (1963 ms)
-       draft hidden from the gallery, promotion ran integrity + assignment, now listed
-[PASS] Configurable rubric is published  (16 ms)
-       Innovation 30.0% · Code Quality 70.0%
+[PASS] Health endpoint answers  (2 ms)
+       status ok; event 'Axion Fixture Hackathon'; window closed (2026-08-01T00:00:00+00:00 → 2026-08-04T00:00:00+00:00); dev login True; commit integrity from mock
+[PASS] OpenAPI schema is served  (34 ms)
+       41 documented paths, OpenAPI 3.1.0, title 'Axion API'
+[PASS] Interactive API docs are served  (3 ms)
+       Swagger UI served at /api/docs (937 bytes of HTML)
 
 ------------------------------------------------------------------------------
-T2 — Judging
+T1 — public surface and the deadline
 ------------------------------------------------------------------------------
 
-[PASS] Participants cannot score anything  (1474 ms)
-       POST /api/judging/scores -> 403, GET /api/judging/assignments -> 403, POST /api/judging/scores (presentation) -> 403, GET /api/admin/leaderboard -> 403, GET /api/admin/export/scores.csv -> 403
-[PASS] Weighted rubric derives the technical verdict  (2358 ms)
-       accept-judge-1790393108@axion.test filed {'innovation': 9, 'code_quality': 5} -> stored verdict 6/10 on submission 1, rubric #1
-[PASS] Blind gate: presentation is withheld until Tier 1 is filed  (2410 ms)
-       403 before the technical verdict, 200 after, 401 for anonymous callers
-[PASS] Judge progress dashboard reports real counts  (44 ms)
-       52/77 verdicts (67.5%), 7 judges tracked
-[PASS] Per-judge progress is also exposed to judges themselves  (1914 ms)
-       x/11 graded, 11 pending
-[PASS] CSV export: leaderboard  (31 ms)
-       10 rows, 12 columns
-[PASS] CSV export: every verdict with z-scores  (34 ms)
-       52 verdicts, 16 columns including per-criterion
-[PASS] CSV export: judging progress  (38 ms)
-       8 judges
-[PASS] Exports are admin-only  (1806 ms)
-       a judge session gets 403 on all three exports
+[PASS] Public event configuration  (17 ms)
+       phase closed; window 2026-08-01T00:00:00+00:00 → 2026-08-04T00:00:00+00:00; 4 tracks; rubric Innovation 30.0%, Code Quality 70.0%; stats {'teams': 40, 'submissions': 40, 'drafts': 0, 'judges': 12, 'verdicts': 131, 'assignments': 138}
+[PASS] Public gallery lists projects  (18 ms)
+       40 projects, 4 tracks; ['demo_url', 'video_url'] withheld from anonymous callers
+[PASS] Gallery search returns matches  (5 ms)
+       q='mesh' matched 5 projects (≥3 declared): Mesh Relay - resilient chat, Nimbus Mesh, Nimbus Mesh (final v2)
+[PASS] Closed event rejects submissions  (36 ms)
+       403 on a live write attempt while the window is closed: 'The submission window is closed — no further edits are accepted'
 
 ------------------------------------------------------------------------------
-T3 — Public surface and audit trail
+T2 — judging, exports and the blind gate
 ------------------------------------------------------------------------------
 
-[PASS] Append-only audit trail records who did what, from where  (29 ms)
-       22 entries, 9 distinct actions, 21 carry a client IP
-[PASS] Audit entries cannot be updated or deleted through the API  (15 ms)
-       no update, patch or delete route exists for audit entries
-[PASS] Ephemeral archive bundle is publishable  (171 ms)
-       bundle v1, 10 ranked of 11 results (1 awaiting verdicts), 52 verdicts, 4574 chars of RESULTS.md
+[PASS] Judge sees their assignments  (15 ms)
+       12 assignments; technical 11/12 filed (91.7%); rubric 'Fixture technical rubric' with 2 weighted criteria
+[PASS] Technical view withholds presentation links  (15 ms)
+       'Flashy Demo': repo and docs visible, demo/video links absent from the payload, presentation_unlocked=True
+[PASS] Presentation stays locked until the technical verdict exists  (9 ms)
+       403 before this judge filed a technical verdict: 'Submit the technical evaluation before the presentation is unlocked' — enforced by the API, not by the browser
+[PASS] Z-score leaderboard ranks every project  (20 ms)
+       39 ranked projects; leader 'Wire Protocol Fuzzer' at 65.34 (raw average 8.33, movement 0); 131 technical verdicts; 1 coverage warnings
+[PASS] Leaderboard CSV export  (19 ms)
+       39 data rows, 15 columns: rank, submission_id, project, team, track, repo_url…
+[PASS] Scores CSV export  (22 ms)
+       131 data rows, 16 columns: submission_id, project, team, track, judge_id, judge_name…
+[PASS] Judging progress CSV export  (59 ms)
+       12 data rows, 9 columns: judge_id, judge, email, assigned, technical_done, technical_pending…
 
 ------------------------------------------------------------------------------
-T4 — Stretch
+AUTH — authenticated boundaries
 ------------------------------------------------------------------------------
 
-[SKIP] PDF certificates  (0 ms)
-       not implemented, and deliberately last in priority: the rules prefer a clean T2 to a broken T4. The archive bundle carries every field a certificate would need.
-[SKIP] Pairwise comparison mode  (0 ms)
-       not implemented: the requirement text supplied for this challenge is truncated after the heading, and pairwise/Bradley-Terry is a large feature. Spec it and it can be built.
+[PASS] Organizer header authenticates as an admin  (2 ms)
+       a header alone authenticates as admin@fixtures.axion.dev (admin), with no login round-trip
+[PASS] Participant cannot read the organizer leaderboard  (4 ms)
+       403 for a participant on an organizer-only route
+[PASS] Anonymous request cannot read the organizer leaderboard  (1 ms)
+       401 with no credentials at all
 
 ------------------------------------------------------------------------------
-Bonus claims
+DATASET — the instance runs the declared dataset
 ------------------------------------------------------------------------------
 
-[PASS] Normalization proof — the rankings genuinely disagree  (37 ms)
-       Quiet Craft raw #7 (6.14) -> Axion #5 (49.19); Flashy Demo raw #5 (6.4) -> Axion #7 (46.63)
-[PASS] API First — generated OpenAPI schema and interactive docs  (169 ms)
-       OpenAPI 3.1.0, 36 documented paths, Swagger UI at /api/docs
-[PASS] Offline mode — local dev login with no external calls  (1638 ms)
-       one-click admin session issued with zero external calls; admin@axion.local + 'password' also works through the ordinary login form
-
-------------------------------------------------------------------------------
-Required artefacts
-------------------------------------------------------------------------------
-
-[PASS] Required files exist  (0 ms)
-       present: README.md, ARCHITECTURE.md, DATA-MODEL.md, JUDGING.md, THREAT-MODEL.md, docker-compose.yml, .env.example
-[PASS] Documentation covers what it claims to  (2 ms)
-       JUDGING.md, DATA-MODEL.md and THREAT-MODEL.md match their required content
+[PASS] Instance is running the declared dataset  (9 ms)
+       declared fixtures.json → observed submissions=40, judges=12, teams=40, verdicts=131, assignments=138
 
 ==============================================================================
 SUMMARY
 ==============================================================================
 
-T0     PASS  API answers on /api/health                                           event='Axion Demo Hackathon', integrity=mock
-T0     PASS  Admin endpoints require authentication                               anonymous access to all four admin routes -> 401
-T0     PASS  Public reads work without a session                                  event, gallery and auth status are anonymous
-T0     PASS  Admin signs in and holds a session                                   signed in as admin@axion.dev (admin)
-T1     PASS  Event configuration is public: window, tracks, prizes                3 tracks, 7 prizes, phase=open, closes 2026-09-28T19:15:01+00:00
-T1     SKIP  Deadline is enforced against the server clock                        submission window is still open, so the closed path cannot be observed here; the pytest suite covers it with a frozen window (tests/test_event_features.py::test_the_deadline_is_enforced_server_side)
-T1     PASS  Searchable public gallery                                            10 projects listed, search q='Quiet' -> 1, track filter on ai-ml -> 4
-T1     PASS  Gallery cannot be used to bypass blind evaluation                    no demo_url or video_url in any public gallery row
-T1     PASS  Participant flow: register, team, invite code, one team per person   registered accept-participant-1790393108@axion.test, created a team, invite-code reuse refused
-T1     PASS  Draft submissions are private and promotable                         draft hidden from the gallery, promotion ran integrity + assignment, now listed
-T1     PASS  Configurable rubric is published                                     Innovation 30.0% · Code Quality 70.0%
-T2     PASS  Participants cannot score anything                                   POST /api/judging/scores -> 403, GET /api/judging/assignments -> 403, POST /api/judging/scores (presentation) -> 403, GET /api/admin/leaderboard -> 403, GET /api/admin/export/scores.csv -> 403
-T2     PASS  Weighted rubric derives the technical verdict                        accept-judge-1790393108@axion.test filed {'innovation': 9, 'code_quality': 5} -> stored verdict 6/10 on submission 1, rubric #1
-T2     PASS  Blind gate: presentation is withheld until Tier 1 is filed           403 before the technical verdict, 200 after, 401 for anonymous callers
-T2     PASS  Judge progress dashboard reports real counts                         52/77 verdicts (67.5%), 7 judges tracked
-T2     PASS  Per-judge progress is also exposed to judges themselves              x/11 graded, 11 pending
-T2     PASS  CSV export: leaderboard                                              10 rows, 12 columns
-T2     PASS  CSV export: every verdict with z-scores                              52 verdicts, 16 columns including per-criterion
-T2     PASS  CSV export: judging progress                                         8 judges
-T2     PASS  Exports are admin-only                                               a judge session gets 403 on all three exports
-T3     PASS  Append-only audit trail records who did what, from where             22 entries, 9 distinct actions, 21 carry a client IP
-T3     PASS  Audit entries cannot be updated or deleted through the API           no update, patch or delete route exists for audit entries
-T3     PASS  Ephemeral archive bundle is publishable                              bundle v1, 10 ranked of 11 results (1 awaiting verdicts), 52 verdicts, 4574 chars of RESULTS.md
-T4     SKIP  PDF certificates                                                     not implemented, and deliberately last in priority: the rules prefer a clean T2 to a broken T4. The archive bundle carries every field a certificate would need.
-T4     SKIP  Pairwise comparison mode                                             not implemented: the requirement text supplied for this challenge is truncated after the heading, and pairwise/Bradley-Terry is a large feature. Spec it and it can be built.
-BONUS  PASS  Normalization proof — the rankings genuinely disagree                Quiet Craft raw #7 (6.14) -> Axion #5 (49.19); Flashy Demo raw #5 (6.4) -> Axion #7 (46.63)
-BONUS  PASS  API First — generated OpenAPI schema and interactive docs            OpenAPI 3.1.0, 36 documented paths, Swagger UI at /api/docs
-BONUS  PASS  Offline mode — local dev login with no external calls                one-click admin session issued with zero external calls; admin@axion.local + 'password' also works through the ordinary login form
-DOCS   PASS  Required files exist                                                 present: README.md, ARCHITECTURE.md, DATA-MODEL.md, JUDGING.md, THREAT-MODEL.md, docker-compose.yml, .env.example
-DOCS   PASS  Documentation covers what it claims to                               JUDGING.md, DATA-MODEL.md and THREAT-MODEL.md match their required content
+T0       PASS  Health endpoint answers                                        status ok; event 'Axion Fixture Hackathon'; window closed (2026-08-01T00:00:00+00:00 → 2026-08-04T00:00:00+00:00); dev login True; commit integrity from mock
+T0       PASS  OpenAPI schema is served                                       41 documented paths, OpenAPI 3.1.0, title 'Axion API'
+T0       PASS  Interactive API docs are served                                Swagger UI served at /api/docs (937 bytes of HTML)
+T1       PASS  Public event configuration                                     phase closed; window 2026-08-01T00:00:00+00:00 → 2026-08-04T00:00:00+00:00; 4 tracks; rubric Innovation 30.0%, Code Quality 70.0%; stats {'teams': 40, 'submissions': 40, 'drafts': 0, 'judges': 12, 'verdicts': 131, 'assignments': 138}
+T1       PASS  Public gallery lists projects                                  40 projects, 4 tracks; ['demo_url', 'video_url'] withheld from anonymous callers
+T1       PASS  Gallery search returns matches                                 q='mesh' matched 5 projects (≥3 declared): Mesh Relay - resilient chat, Nimbus Mesh, Nimbus Mesh (final v2)
+T1       PASS  Closed event rejects submissions                               403 on a live write attempt while the window is closed: 'The submission window is closed — no further edits are accepted'
+T2       PASS  Judge sees their assignments                                   12 assignments; technical 11/12 filed (91.7%); rubric 'Fixture technical rubric' with 2 weighted criteria
+T2       PASS  Technical view withholds presentation links                    'Flashy Demo': repo and docs visible, demo/video links absent from the payload, presentation_unlocked=True
+T2       PASS  Presentation stays locked until the technical verdict exists   403 before this judge filed a technical verdict: 'Submit the technical evaluation before the presentation is unlocked' — enforced by the API, not by the browser
+T2       PASS  Z-score leaderboard ranks every project                        39 ranked projects; leader 'Wire Protocol Fuzzer' at 65.34 (raw average 8.33, movement 0); 131 technical verdicts; 1 coverage warnings
+T2       PASS  Leaderboard CSV export                                         39 data rows, 15 columns: rank, submission_id, project, team, track, repo_url…
+T2       PASS  Scores CSV export                                              131 data rows, 16 columns: submission_id, project, team, track, judge_id, judge_name…
+T2       PASS  Judging progress CSV export                                    12 data rows, 9 columns: judge_id, judge, email, assigned, technical_done, technical_pending…
+AUTH     PASS  Organizer header authenticates as an admin                     a header alone authenticates as admin@fixtures.axion.dev (admin), with no login round-trip
+AUTH     PASS  Participant cannot read the organizer leaderboard              403 for a participant on an organizer-only route
+AUTH     PASS  Anonymous request cannot read the organizer leaderboard        401 with no credentials at all
+DATASET  PASS  Instance is running the declared dataset                       declared fixtures.json → observed submissions=40, judges=12, teams=40, verdicts=131, assignments=138
 
-27 passed, 0 failed, 3 skipped (30 checks)
+18 passed, 0 failed, 0 skipped (18 checks)
 
-SKIP is not PASS: a skipped check states the reason it could not be observed
-in this environment, and the automated pytest suite covers those paths
-separately (api/tests, 82 tests).
+SKIP is not PASS: a skipped check states why it could not be observed. The
+automated pytest suite covers the same paths in-process (api/tests).
 
 RESULT: ALL EXECUTED CHECKS PASSED
 

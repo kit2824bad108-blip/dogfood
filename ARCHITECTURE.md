@@ -205,6 +205,40 @@ library, because six primitives is less code than one dependency.
   side, so the API stays the only source of truth. `RequireAuth` handles the redirect-and-role dance in one
   place.
 
+## Dataset import, and the acceptance checker
+
+Two pieces exist because a real event is messier than a curated demo, and because a claim about a running
+system should be mechanically checkable.
+
+**Import.** `api/app/fixtures.py` is split so the interesting part is testable without a database:
+
+- `validate()` reports structural problems (unknown teams, duplicate ids, unparseable timestamps) and an
+  import with **any** invalid record is refused whole — half an event is worse than none;
+- `diagnose()` is pure: counts, incomplete batches, zero-variance judges, single-verdict judges, duplicates,
+  nulls, string ids, UTC normalisation, and whether the imported window is closed;
+- `apply_fixture()` writes it, idempotent on `source_ref`, and records an `import_batches` row either way.
+
+An import never reopens a deadline. `EVENT_SOURCE=fixtures` makes the window come from the dataset, which is
+the only way a *closed* fixture event can be demonstrated rather than described, and `/api/health` publishes
+the window that was actually resolved.
+
+**Timestamps.** SQLite (the offline path) returns naive datetimes even from `DateTime(timezone=True)`
+columns, while Postgres returns aware ones. `api/app/timeutil.py` is the single place that decides what a
+stored datetime means — a naive one is UTC — and every serializer emits through `iso()`, so a browser can
+never read a deadline as local time by accident.
+
+**The checker.** `.dogfood.toml` declares the routes, roles, status expectations, dataset sizes and even the
+gallery search probe; `api/scripts/dogfood_check.py` reads it with the standard library and contains no route
+list of its own, so the contract and the check cannot drift apart. Credentials are **fetched** from
+`GET /api/dev/checker-headers` (gated on the same flag as the passwordless dev login) and never embedded in
+the file, which is why the manifest is valid on any machine and contains no secret. The one write the
+checker attempts — a submission against the closed fixture event — is *skipped* rather than sent when the
+event is open, so a read-only run cannot mutate the instance it is measuring.
+
+`api/scripts/acceptance.py` remains the tier-by-tier tool (T0–T4 plus bonus claims) and writes to a separate
+file. Neither report is a run of an organiser-provided suite: none existed, and both say so in their first
+lines rather than letting the artefact imply otherwise.
+
 ## Testing strategy
 
 `api/tests/` runs against in-memory SQLite with `MOCK_GITHUB=true`, so the suite needs no Postgres and no

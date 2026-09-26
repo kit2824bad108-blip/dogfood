@@ -20,7 +20,11 @@ evaluation.
 | [DATA-MODEL.md](./DATA-MODEL.md) | Postgres schema, tables, constraints, ERD |
 | [JUDGING.md](./JUDGING.md) | Judge assignment, scoring methodology, normalization method and the proof |
 | [THREAT-MODEL.md](./THREAT-MODEL.md) | Sybil voting, judge collusion, deadline gaming, and what is out of scope |
-| [acceptance-report.txt](./acceptance-report.txt) | Tier-by-tier acceptance run against the live API |
+| [VERIFICATION.md](./VERIFICATION.md) | What was actually executed here, with commands and results, and what could not be |
+| [.dogfood.toml](./.dogfood.toml) | The self-check manifest: routes, roles, status codes and dataset expectations |
+| [fixtures.json](./fixtures.json) | The deliberately messy 40-project dataset, and what it contains |
+| [acceptance-report.txt](./acceptance-report.txt) | The manifest-driven self-check against a live instance |
+| [acceptance-report.axion.txt](./acceptance-report.axion.txt) | The tier-by-tier suite (T0–T4 plus bonus claims) |
 
 ## Run it (one command)
 
@@ -130,6 +134,7 @@ Everything an organiser needs is in **/admin**:
 | Leaderboard | Axion vs naive ranking, grader calibration, **CSV export** of the leaderboard and of every verdict (raw score, that judge's mean/σ, the z-score and each criterion) |
 | Judging progress | Per-judge `x/10 graded`, pending count, last activity, and a **CSV export** |
 | Commit review | The Commit Integrity review queue, with a re-check action |
+| Import & duplicates | Dry-run/apply a fixture, the import diagnostics, the duplicate review queue, coverage totals and balanced assignment |
 | Tracks & prizes | Create tracks (slug, description, prize pool) and prizes, per track or overall |
 | Rubric | Edit the criteria and their weights; the preview shows the resulting percentages |
 | Audit trail | The append-only record, newest first |
@@ -139,6 +144,62 @@ Everything an organiser needs is in **/admin**:
 The public **/gallery** page lists every submitted project with search and a track filter. It deliberately
 omits demo and video links: blind evaluation would be theatre if an unauthenticated page published the
 presentation tier.
+
+## What Axion claims, and what it does not
+
+A clean T2 is worth more than a broken T4, so the claim list is short and every line is backed by a test, a
+route or a file in this repository.
+
+| Tier | Status | Evidence |
+| ---- | ------ | -------- |
+| **T1 — core** | **Claimed** | Event window, tracks and prizes, drafts editable before the deadline, server-side deadline enforcement, a searchable public gallery, registration and teams with invite codes |
+| **T2 — judging** | **Claimed** | Weighted rubrics, blind technical-then-presentation ordering, Z-score normalization with a worked proof, per-judge progress, the normalized leaderboard, CSV exports of the leaderboard, every verdict and judging progress, coverage/provisional marking, and a duplicate review queue |
+| **T3 — community** | **Not claimed** | There is no community voting, no comment thread and no ballot anti-abuse control. The audit trail is real and append-only, but an audit trail is not a voting system, and T3 is not claimed on its strength. |
+| **T4 — stretch** | **Not claimed** | No webhook outbox, no certificates, no signed judge records and no embeddable gallery. The OpenAPI schema is served and the archive is real; that is not T4. |
+
+Bonus items claimed, each with something behind it: the **normalization proof** ([JUDGING.md](./JUDGING.md)),
+**API first** (`/api/docs` and `/api/openapi.json`, with a run-time check that the expected paths still
+exist) and the **threat model** ([THREAT-MODEL.md](./THREAT-MODEL.md)).
+
+## Import a messy dataset
+
+A curated ten-project demo proves nothing about a real event, so `fixtures.json` is deliberately awkward:
+40 projects, 12 judges, 40 teams, 131 verdicts, and every problem a real event arrives with.
+
+```bash
+# 1. Diagnose it. Pure function, no database, writes nothing.
+cd api && python -c "from app import fixtures; print('\n'.join(fixtures.diagnose(fixtures.load_fixture())['headline']))"
+
+# 2. Boot the API on it. The fixture event has already closed, and that deadline is enforced.
+SEED_DEMO=true SEED_MODE=fixtures EVENT_SOURCE=fixtures \
+  DATABASE_URL="sqlite+pysqlite:////tmp/axion-fixtures.db" uvicorn app.main:app --port 8000
+```
+
+`POST /api/admin/import` and the **Import & duplicates** tab run the same code, dry-run by default. The
+diagnostics are the point:
+
+```
+40 projects imported
+12 judges imported
+4 incomplete review batches detected (1 with no verdicts at all)
+2 duplicate candidates detected
+1 zero-variance judge detected
+0 invalid records
+```
+
+What it handles, and how. An **incomplete batch** is an assignment with no verdict: a missing score stays
+missing, the project is marked *provisional* and it is not ranked as if it had scored zero. A
+**zero-variance judge** (every verdict identical) is detected from the verdicts themselves and contributes
+`z = 0` for all of them; a **single-verdict judge** borrows the pool's dispersion rather than minting an
+arbitrary z. **Duplicates** are found by comparing normalised repository URLs and title fingerprints, so
+casing, a trailing slash and a `.git` suffix are not three different projects — while "Mesh Scheduler" is
+not confused with "Mesh Relay". Detection is recomputed on every request and only an organiser's decision is
+stored; a confirmed duplicate is flagged, never deleted. **String ids** (`proj_017`) are preserved in
+`source_ref`, so importing twice updates instead of duplicating, and **timestamps** are normalised to UTC on
+the way in and serialised with an explicit offset on the way out.
+
+Forty projects need forty teams: Axion allows a team exactly one submission, and the first draft of this
+dataset hit that constraint on import. The constraint was right, so the dataset changed.
 
 ## We claim the API First bonus
 
@@ -174,8 +235,9 @@ which keeps the session cookie same-origin and hides the API port.
 ## Tests and the acceptance report
 
 ```bash
-make test                                     # pytest + typecheck (82 tests)
-make acceptance                               # live tier-by-tier run -> acceptance-report.txt
+make test                                     # pytest + typecheck
+make acceptance                               # self-check via .dogfood.toml -> acceptance-report.txt
+make acceptance-axion                         # tier-by-tier suite -> acceptance-report.axion.txt
 cd api && python -m pytest -q                 # or directly
 docker compose exec api python -m pytest -q    # no local Python setup needed
 cd web && npm run typecheck && npm run build
@@ -185,10 +247,20 @@ The pytest suite covers the normalization math (including the harsh-6-versus-gen
 zero-variance judges and single-verdict judges), the blind-evaluation boundary, commit-integrity parsing,
 the draft/deadline rules, the rubric weighting, the gallery and the CSV exports.
 
-`acceptance-report.txt` in the repository root is the output of running the acceptance suite against a live,
-seeded instance. It is **Axion's own** suite: no organiser-provided acceptance script, Postman collection or
-test harness was available in this repository or the hackathon resources at build time, and the report says
-so in its header rather than implying otherwise.
+The suite also covers the fixture importer's edge cases, duplicate and coverage handling, the balanced
+assignment planner and a regression guard on the demo numbers quoted above.
+
+There are **two report artefacts**, and they do not overwrite each other:
+
+| File | Produced by | What it is |
+| ---- | ----------- | ---------- |
+| `acceptance-report.txt` | `api/scripts/dogfood_check.py` reading [.dogfood.toml](./.dogfood.toml) | The manifest-driven self-check: the routes, roles and status codes a checker should observe, so the contract and the check cannot drift apart. Credentials come from the endpoint the manifest names, never from a token in the file. |
+| `acceptance-report.axion.txt` | `api/scripts/acceptance.py` | The tier-by-tier suite (T0–T4 plus the bonus claims), which prints a SKIP with its reason wherever something cannot be observed in this environment |
+
+Neither is a run of an organiser-provided suite. **No organiser `.dogfood.toml`, `run.py` or
+`fixtures.json` existed in this repository, in the hackathon brief, or anywhere on the build machine**, so
+rather than claim a run that never happened, Axion ships its own manifest and says so in the first lines of
+both reports. [VERIFICATION.md](./VERIFICATION.md) records what was executed and what was not.
 
 ## Configuration
 
@@ -197,7 +269,9 @@ All variables are documented in `.env.example`. The ones that matter most:
 | Variable | Purpose |
 | -------- | ------- |
 | `SECRET_KEY` | Signs session cookies. **Change before exposing the app.** |
-| `EVENT_START` / `EVENT_END` | The commit-integrity window **and** the submission deadline, enforced server-side. Defaults to the 72 hours ending now. |
+| `EVENT_START` / `EVENT_END` | The commit-integrity window **and** the submission deadline, enforced server-side. Leave both blank and the window is a 72-hour event that is **open now**. A blank `EVENT_END` used to resolve to "ended at boot", which closed submissions on the one-command path; an explicit value still wins, so a closed event stays closed. |
+| `EVENT_SOURCE` | `env` (default) or `fixtures`, which reads the window from `fixtures.json` so an imported closed deadline is genuinely enforced. |
+| `SEED_MODE` | `demo` (default — the crafted dataset every number in these docs was computed against) or `fixtures` (the messy 40-project dataset). |
 | `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | Enables "Continue with GitHub". Register the callback `{WEB_URL}/api/auth/github/callback`. Without them participants register with email. |
 | `GITHUB_TOKEN` | Raises the GitHub API limit from 60 to 5000 requests/hour. |
 | `MOCK_GITHUB` | Computes commit integrity from deterministic synthetic data. Keep `true` for offline demos. |
@@ -216,5 +290,14 @@ All variables are documented in `.env.example`. The ones that matter most:
 - **Participants are not emailed.** Judges are created by the organiser, who hands out credentials.
 - **`docker compose up` and `make` were not executed while building this**, because the build environment
   has neither a Docker CLI nor `make`. Both are validated structurally (Compose parsed and checked for
-  service wiring, healthcheck and env completeness) and the acceptance report was produced against the API
-  running directly under uvicorn with the Next.js frontend in production mode.
+  service wiring, healthcheck and env completeness) and both reports were produced against the API running
+  directly under uvicorn with the Next.js frontend in production mode. [VERIFICATION.md](./VERIFICATION.md)
+  states this plainly rather than implying a green one-command boot.
+- **Full coverage is the default model.** Every judge on every project is right at ten projects and wrong at
+  five hundred, so balanced assignment exists as an explicit organiser action. It reports the number of
+  connected components in the judge/project overlap graph: more than one means the ranking is really several
+  rankings, and it says so.
+- **An imported dataset is not repaired.** A fixture with invalid records is refused whole rather than
+  partially imported, because half an event is worse than none.
+- **The `docker` path is the only unverified claim.** Everything else in this README was executed; see
+  VERIFICATION.md for the exact commands and their output.
