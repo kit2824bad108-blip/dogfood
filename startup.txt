@@ -1,0 +1,227 @@
+==============================================================================
+AXION — HOW TO START THE PROJECT
+==============================================================================
+
+Axion is two services plus a database:
+
+    db   PostgreSQL 16      (Docker only; local runs can use SQLite instead)
+    api  FastAPI + uvicorn  http://localhost:8000
+    web  Next.js            http://localhost:3000   <- open this one
+
+The browser only ever talks to the web service on :3000. Next.js proxies every
+/api/* request to the API on :8000, so the session cookie stays same-origin.
+You never need to open :8000 by hand — except to read the API docs.
+
+
+------------------------------------------------------------------------------
+OPTION A — DOCKER COMPOSE (the one command)
+------------------------------------------------------------------------------
+
+Requirements: Docker Desktop (or Docker Engine + the Compose plugin) running.
+
+    cp .env.example .env        # optional — every value has a working default
+    docker compose up --build
+
+Then open:  http://localhost:3000
+
+That is the whole startup. The API container's entrypoint
+(api/scripts/entrypoint.sh) does three things on boot, in order:
+
+    1. alembic upgrade head      create/patch the Postgres schema
+    2. python -m app.seed        only when SEED_DEMO=true (the default)
+    3. uvicorn app.main:app      serve the API
+
+The seed prints a table to the container logs showing the naive average next to
+the Axion Z-score leaderboard. The two disagree on purpose:
+
+    Flashy Demo   raw 6.40  ->  Axion 46.66  (rank -2)
+    Quiet Craft   raw 6.00  ->  Axion 48.79  (rank +2)
+
+Useful follow-ups:
+
+    make logs        follow the container logs
+    make down        stop everything (keeps the database volume)
+    make reset       stop and DELETE the database volume (clean cold start)
+    make seed        re-run the seed inside the running API container
+
+
+------------------------------------------------------------------------------
+OPTION B — RUN IT LOCALLY (no Docker)
+------------------------------------------------------------------------------
+
+Requirements: Python 3.12+ and Node 18+ (verified on Python 3.12.10, Node 24).
+Commands below are Git Bash on Windows; macOS/Linux notes are inline.
+
+STEP 1 — API dependencies (first time only)
+
+    cd api
+    python -m venv .venv
+
+    # Windows (Git Bash):
+    ./.venv/Scripts/python.exe -m pip install -r requirements.txt
+
+    # macOS / Linux:
+    # .venv/bin/python -m pip install -r requirements.txt
+
+STEP 2 — Create the database, load the demo data, and start the API
+
+    cd api
+
+    export DATABASE_URL="sqlite+pysqlite:///./axion-dev.db"
+    export MOCK_GITHUB=true
+    export SEED_DEMO=true
+    export EVENT_NAME="Axion Demo Hackathon"
+    export EVENT_START="2026-09-23T19:15:00+00:00"
+    export EVENT_END="2026-09-28T19:15:01+00:00"
+
+    # 1. creates the tables AND the demo dataset (safe to re-run; it skips if
+    #    the database is already populated)
+    ./.venv/Scripts/python.exe -m app.seed
+
+    # 2. start the API
+    ./.venv/Scripts/python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+
+    # macOS / Linux: swap ./.venv/Scripts/python.exe for ./.venv/bin/python
+
+Leave that terminal running. The local SQLite file is written to
+api/axion-dev.db, which is git-ignored.
+
+STEP 3 — The web app (second terminal)
+
+    cd web
+    npm install          # first time only
+    npm run dev          # serves http://localhost:3000
+
+STEP 4 — Open the app
+
+    http://localhost:3000
+
+Check both are alive:
+
+    curl http://127.0.0.1:8000/api/health
+    curl http://127.0.0.1:3000/api/health      # same answer, through the proxy
+
+
+------------------------------------------------------------------------------
+! IMPORTANT — KEEP THE SUBMISSION WINDOW OPEN
+------------------------------------------------------------------------------
+
+EVENT_START and EVENT_END are read from the environment at API boot. If you
+leave EVENT_END unset, it defaults to "now", which means the submission
+deadline has ALREADY PASSED the moment the API starts:
+
+    * the seeded demo projects still exist and judging still works
+    * but registering, saving a DRAFT, or submitting will be refused as late
+
+That looks like a broken app when it is really a closed deadline. Always set an
+EVENT_END in the future (and an EVENT_START in the past) if you want to demo
+draft-and-edit, or the deadline check itself:
+
+    EVENT_START=2026-09-23T19:15:00+00:00     # in the past
+    EVENT_END=2026-09-28T19:15:01+00:00       # in the future
+
+The deadline is enforced against the server clock, never the browser's.
+
+
+------------------------------------------------------------------------------
+SIGNING IN — INCLUDING WITH THE NETWORK OFF
+------------------------------------------------------------------------------
+
+GitHub OAuth is optional and off by default (no credentials set). With
+MOCK_GITHUB=true or SEED_DEMO=true the sign-in page also shows a "Local Dev
+Login" panel with one-click buttons that make zero external calls.
+
+    Role        Email                    Password
+    ----------  -----------------------  -------------
+    Organiser   admin@axion.dev          axion-admin
+    Organiser   admin@axion.local        password       (offline account)
+    Judge       disciplined@axion.dev    axion-judge
+    Judge       expansive@axion.dev      axion-judge
+    Judge       balanced-a@axion.dev     axion-judge
+    Participant hacker@axion.local       password       (offline, on a team)
+    Participant hacker01@axion.dev ...   axion-hacker
+
+The one-click buttons are: "Login as Admin", "Login as Judge", "Login as
+Hacker". The endpoint behind them returns 403 unless the deployment is in demo
+mode, so it cannot become a backdoor in a live event.
+
+
+------------------------------------------------------------------------------
+THINGS TO LOOK AT ONCE IT IS UP
+------------------------------------------------------------------------------
+
+    /                    landing page, tracks, prizes, sign-in
+    /gallery             public, searchable project gallery
+    /submit              save a DRAFT, then submit before the deadline
+    /judge               "x/y graded" progress, then blind technical scoring
+    /admin               leaderboard, judging progress, rubric, audit trail,
+                         event setup, CSV exports
+    /api/docs            Swagger UI (OpenAPI) for the whole API — API First
+
+The settings menu sits in the BOTTOM-LEFT corner of every page: theme
+(light/dark/system), the event window, the environment flags, and a link to the
+API reference.
+
+
+------------------------------------------------------------------------------
+RUN THE ACCEPTANCE SUITE
+------------------------------------------------------------------------------
+
+With the stack up and seeded:
+
+    # against the Compose stack or a local API already running on :8000
+    AXION_API_URL=http://127.0.0.1:8000 \
+      api/.venv/Scripts/python.exe api/scripts/acceptance.py
+
+    # or, with make installed:
+    make acceptance
+
+Exit code 0 means nothing failed. To save the report the challenge asks for:
+
+    AXION_API_URL=http://127.0.0.1:8000 \
+      api/.venv/Scripts/python.exe api/scripts/acceptance.py > acceptance-report.txt
+
+The unit tests are separate and need no running server:
+
+    api/.venv/Scripts/python.exe -m pytest -q     # from repo root
+    cd web && npm run typecheck
+    cd web && npm run build
+
+
+------------------------------------------------------------------------------
+TROUBLESHOOTING
+------------------------------------------------------------------------------
+
+"no such table: submissions" / Internal Server Error on every data page
+    The database has no schema. This happens when the API is started with bare
+    uvicorn, which skips the migrate+seed step that the Docker entrypoint runs.
+    Fix: run the seed once against the same DATABASE_URL, then restart:
+
+        ./.venv/Scripts/python.exe -m app.seed
+
+Empty leaderboard or "0 projects entered"
+    Same cause as above, or SEED_DEMO was not true at boot.
+
+Submissions or drafts rejected as late
+    EVENT_END is in the past (or unset, which defaults to "now").
+    See the IMPORTANT note above.
+
+Page loads but a data panel is empty
+    The web service cannot reach the API. Confirm http://127.0.0.1:8000/api/health
+    answers, then hard-reload.
+
+/api/* returns 404 or the wrong host
+    Next.js bakes rewrite destinations in at BUILD time
+    (see web/next.config.mjs and API_INTERNAL_URL). Restart `npm run dev`, or
+    rebuild the web image, after changing that value.
+
+Port 3000 or 8000 already in use
+    Find and stop the listener, or run on another port:
+
+        netstat -ano | grep LISTENING | grep ":8000"
+        taskkill //PID <pid> //F
+
+        npm run dev -- -p 3100
+        uvicorn app.main:app --port 8001
+
+------------------------------------------------------------------------------
