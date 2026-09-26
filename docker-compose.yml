@@ -18,6 +18,9 @@ services:
 
   api:
     build: ./api
+    # Named so the offline override (docker-compose.offline.yml) can reuse the
+    # exact image that was just built for its probe, runner and workflow.
+    image: axion-api
     depends_on:
       db:
         condition: service_healthy
@@ -34,19 +37,37 @@ services:
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       MOCK_GITHUB: ${MOCK_GITHUB:-true}
       SEED_DEMO: ${SEED_DEMO:-true}
-      # demo (default, the crafted dataset every published number was computed
-      # against) or fixtures (fixtures.json: messy, and already past its deadline).
-      SEED_MODE: ${SEED_MODE:-demo}
-      # env (default) or fixtures, which takes the event window from fixtures.json
-      # so an imported closed deadline is genuinely enforced.
-      EVENT_SOURCE: ${EVENT_SOURCE:-env}
+      # demo (the app's default: the crafted dataset every published number was
+      # computed against) or fixtures (fixtures.json: messy, already closed).
+      # Deliberately blank when unset: a hard default here would be *set* in the
+      # container and would shadow DOGFOOD_FIXTURE_MODE, whose whole job is to
+      # select the fixture dataset in one flag.
+      SEED_MODE: ${SEED_MODE:-}
+      # env (the app's default) or fixtures, which takes the event window from
+      # fixtures.json so an imported closed deadline is genuinely enforced.
+      # Blank for the same reason as SEED_MODE: the alias must be able to decide.
+      EVENT_SOURCE: ${EVENT_SOURCE:-}
       # One-flag alias for `SEED_MODE=fixtures EVENT_SOURCE=fixtures`: runs the
       # acceptance dataset and enforces its closed window. The explicit values
       # above still win.
       DOGFOOD_FIXTURE_MODE: ${DOGFOOD_FIXTURE_MODE:-false}
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      # The fixture dataset sits at the repository root, which is not part of the
+      # API build context; the volume below mounts the file and this names it.
+      FIXTURES_PATH: /app/fixtures.json
+    volumes:
+      - ./fixtures.json:/app/fixtures.json:ro
     ports:
       - "8000:8000"
+    healthcheck:
+      # Readiness, not liveness: an instance that has not finished migrating or
+      # seeding is not handed traffic (see api/app/readiness.py).
+      test: ["CMD", "python", "-m", "app.healthcheck"]
+      interval: 5s
+      timeout: 10s
+      retries: 24
+      # First boot runs migrations and the seed before uvicorn is useful.
+      start_period: 90s
     restart: unless-stopped
 
   web:
@@ -56,7 +77,8 @@ services:
       args:
         API_INTERNAL_URL: http://api:8000
     depends_on:
-      - api
+      api:
+        condition: service_healthy
     ports:
       - "3000:3000"
     restart: unless-stopped

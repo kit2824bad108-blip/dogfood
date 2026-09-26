@@ -1,0 +1,79 @@
+# Offline acceptance run.
+#
+# The application is attached to an internal-only network: there is no gateway
+# and no route to the internet, so "offline" is a property of the network the
+# containers are actually on, not an environment variable. Two extra services
+# run inside that same network:
+#
+#   probe     proof that egress fails and Axion still answers
+#   runner    the acceptance checker (api/scripts/dogfood_check.py)
+#   workflow  the write path end to end (api/scripts/offline_workflow.py)
+#
+# Usage (fixture dataset — the acceptance dataset):
+#
+#   EVENT_START= EVENT_END= DOGFOOD_FIXTURE_MODE=true \
+#     docker compose -f docker-compose.yml -f docker-compose.offline.yml up --build -d
+#   docker compose -f docker-compose.yml -f docker-compose.offline.yml run --rm probe
+#   docker compose -f docker-compose.yml -f docker-compose.offline.yml run --rm runner
+#
+# Usage (demo dataset — the open window, so the workflow can write):
+#
+#   EVENT_START= EVENT_END= SEED_MODE=demo \
+#     docker compose -f docker-compose.yml -f docker-compose.offline.yml up --build -d
+#   docker compose -f docker-compose.yml -f docker-compose.offline.yml run --rm workflow
+#
+# Host port publishing is removed (`!reset`) because a published port on an
+# internal network is a contradiction: the point is that nothing here can be
+# reached from outside, and the checker runs inside the network anyway.
+
+services:
+  db:
+    networks: [offline]
+    ports: !reset []
+
+  api:
+    networks: [offline]
+    ports: !reset []
+
+  web:
+    networks: [offline]
+    ports: !reset []
+
+  probe:
+    image: axion-api
+    networks: [offline]
+    entrypoint: ["python", "scripts/offline_probe.py"]
+    depends_on:
+      api:
+        condition: service_healthy
+
+  runner:
+    image: axion-api
+    networks: [offline]
+    environment:
+      AXION_API_URL: http://api:8000
+    volumes:
+      - ./.dogfood.toml:/manifest/.dogfood.toml:ro
+    command:
+      [
+        "python",
+        "scripts/dogfood_check.py",
+        "/manifest/.dogfood.toml",
+      ]
+    depends_on:
+      api:
+        condition: service_healthy
+
+  workflow:
+    image: axion-api
+    networks: [offline]
+    environment:
+      AXION_API_URL: http://api:8000
+    entrypoint: ["python", "scripts/offline_workflow.py"]
+    depends_on:
+      api:
+        condition: service_healthy
+
+networks:
+  offline:
+    internal: true

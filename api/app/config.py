@@ -58,6 +58,17 @@ def _env_dt(name: str, default: datetime | None = None) -> datetime | None:
     return _parse_dt(_env(name), default)
 
 
+def fixtures_path() -> str:
+    """Where the fixture dataset lives.
+
+    `FIXTURES_PATH` names it explicitly, which is what a container needs: the API
+    image does not contain the repository root, so compose mounts the file and
+    points this variable at the mount. Unset, the repository root is the right
+    answer for a checkout.
+    """
+    return _env("FIXTURES_PATH") or os.path.join(REPO_ROOT, "fixtures.json")
+
+
 def fixture_window() -> tuple[datetime | None, datetime | None]:
     """The event window declared by the fixture dataset, if there is one.
 
@@ -66,7 +77,7 @@ def fixture_window() -> tuple[datetime | None, datetime | None]:
     selects it; an explicit EVENT_START/EVENT_END still wins over the file.
     """
     try:
-        with open(os.path.join(REPO_ROOT, "fixtures.json"), encoding="utf-8") as handle:
+        with open(fixtures_path(), encoding="utf-8") as handle:
             payload = json.load(handle)
     except (OSError, ValueError):
         return None, None

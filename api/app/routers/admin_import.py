@@ -157,15 +157,16 @@ def import_diagnostics(
     db: Session = Depends(get_db), user: User = Depends(require_role(*ADMIN_ROLES))
 ) -> dict:
     """What the last import reported, plus what is true of the database right now."""
+    fixture_path = fixtures.default_fixture_path()
     batch = fixtures.latest_batch(db)
     duplicates = detected_duplicates(db)
     coverage = assignment.coverage_snapshot(db)
     return {
         "last_batch": fixtures.batch_to_dict(batch),
         "fixture": {
-            "path": str(fixtures.DEFAULT_FIXTURE_PATH),
-            "present": fixtures.DEFAULT_FIXTURE_PATH.exists(),
-            "mode": "fixtures" if fixtures.DEFAULT_FIXTURE_PATH.exists() else "demo",
+            "path": str(fixture_path),
+            "present": fixture_path.exists(),
+            "mode": "fixtures" if fixture_path.exists() else "demo",
         },
         "live": {
             "duplicates": len(duplicates),

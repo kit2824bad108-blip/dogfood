@@ -3,11 +3,12 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import devtokens
 from .config import settings
+from .readiness import readiness_report
 from .routers import admin, admin_import, auth, devtools, event, judging, submissions, teams
 
 
@@ -54,6 +55,24 @@ app.include_router(judging.router)
 app.include_router(admin.router)
 app.include_router(admin_import.router)
 app.include_router(devtools.router)
+
+
+@app.get("/api/health/live", tags=["meta"])
+def health_live() -> dict:
+    """Liveness: the process is up. Deliberately touches nothing else."""
+    return {"status": "alive"}
+
+
+@app.get("/api/health/ready", tags=["meta"])
+def health_ready(response: Response) -> dict:
+    """Readiness: database, migrations and dataset, each named when it fails.
+
+    The Compose healthcheck calls this and the web service waits for it, so a
+    half-migrated or unseeded instance is never handed traffic.
+    """
+    report, status_code = readiness_report()
+    response.status_code = status_code
+    return report
 
 
 @app.get("/api/health", tags=["meta"])

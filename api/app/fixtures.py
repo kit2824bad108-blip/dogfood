@@ -54,9 +54,20 @@ from .services import DEFAULT_RUBRIC_NAME, ensure_default_rubric
 from .timeutil import iso
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_FIXTURE_PATH = REPO_ROOT / "fixtures.json"
 
 FIXTURE_SOURCE = "fixtures.json"
+
+
+def default_fixture_path() -> Path:
+    """Where the fixture dataset lives: `FIXTURES_PATH`, or the repository root.
+
+    The API image has no repository root (the API is copied to a working
+    directory of its own), so compose mounts the file and names it explicitly.
+    See `config.fixtures_path()`.
+    """
+    from .config import fixtures_path
+
+    return Path(fixtures_path())
 RUBRIC_FALLBACK_MIN_COVERAGE = 3
 
 
@@ -65,9 +76,11 @@ RUBRIC_FALLBACK_MIN_COVERAGE = 3
 
 def load_fixture(path: Path | str | None = None) -> dict[str, Any]:
     """Read a fixture file. Raises ValueError if it is not a usable dataset."""
-    resolved = Path(path) if path else DEFAULT_FIXTURE_PATH
+    resolved = Path(path) if path else default_fixture_path()
     if not resolved.is_absolute():
-        resolved = REPO_ROOT / resolved
+        # A relative path is read beside the configured fixture file, so
+        # FIXTURES_PATH relocates a deployment's datasets together.
+        resolved = default_fixture_path().parent / resolved
     if not resolved.exists():
         raise ValueError(f"fixture file not found: {resolved}")
     try:
