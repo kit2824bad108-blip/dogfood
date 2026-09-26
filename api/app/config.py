@@ -10,6 +10,15 @@ import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv()
+    _repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    load_dotenv(os.path.join(_repo_root, ".env"))
+except ImportError:
+    pass
+
 DEFAULT_WINDOW = timedelta(hours=72)
 
 

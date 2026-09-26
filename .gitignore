@@ -22,3 +22,7 @@ next-env.d.ts.bak
 Thumbs.db
 .idea/
 .vscode/
+
+# Local SQLite databases (created at runtime, never portable)
+*.db
+*.db-journal
