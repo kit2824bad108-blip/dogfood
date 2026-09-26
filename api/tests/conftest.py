@@ -25,6 +25,9 @@ os.environ["EVENT_END"] = (_NOW + timedelta(hours=24)).isoformat()
 # that the gating tests assert is *off*. Tests must not depend on local state.
 os.environ["LOCAL_DEV_LOGIN"] = "false"
 os.environ.pop("EVENT_SOURCE", None)
+# Same reason as EVENT_SOURCE: a developer's .env opting into fixture mode must
+# not flip the dataset or the event window inside the tests.
+os.environ.pop("DOGFOOD_FIXTURE_MODE", None)
 os.environ["SEED_MODE"] = "demo"
 
 import pytest  # noqa: E402

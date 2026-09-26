@@ -12,12 +12,15 @@ rather than asserted.
 
 | # | Command | Observed result |
 | - | ------- | --------------- |
-| 1 | `cd api && ./.venv/Scripts/python.exe -m pytest -q` | **102 passed**, 1 warning, 205 s. The warning is a Starlette deprecation notice about `anyio.abc.BlockingPortal`, not a failure |
+| 1 | `cd api && ./.venv/Scripts/python.exe -m pytest -q` | **125 passed**, 1 warning, 242 s. The warning is a Starlette deprecation notice about `anyio.abc.BlockingPortal`, not a failure. 102 ran before Phase A1; the 23 added are the checker-header, role-isolation, validator-CLI and two-clean-import determinism tests |
 | 2 | `cd web && npm run typecheck` | Clean (`tsc --noEmit`) |
 | 3 | `cd web && npm run build` | Clean: 9 routes, 103 kB shared first-load JS |
-| 4 | Fixture-mode boot, then the manifest-driven check → `acceptance-report.txt` | **18 passed, 0 failed, 0 skipped** |
+| 4 | Fixture-mode boot, then the manifest-driven check → `acceptance-report.txt` | **18 passed, 0 failed, 0 skipped** — the committed report artefact; it predates the Phase A1 check added in row 7 |
 | 5 | Demo-mode boot, then the tier suite → `acceptance-report.axion.txt` | **27 passed, 0 failed, 3 skipped** |
 | 6 | `api/.venv/Scripts/python.exe api/scripts/build_fixtures.py` | Regenerates `fixtures.json` from a fixed seed (deterministic) |
+| 7 | Phase A1: boot through `DOGFOOD_FIXTURE_MODE=true` alone (no `SEED_MODE`, no `EVENT_SOURCE`), then `dogfood_check.py .dogfood.toml` against that instance on :8010 | **19 passed, 0 failed, 0 skipped** — the added check is the participant surface (`GET /api/submissions/me` as the participant header). The committed `acceptance-report.txt` was deliberately not rewritten in Phase A1 |
+| 8 | `api/.venv/Scripts/python.exe api/scripts/validate_fixtures.py` | Exit 0, `RESULT: VALID`: 40 projects / 12 judges / 40 teams / 48 participants / 131 reviews / 138 assignments, with the edge cases named (`judge_11`, `judge_12`, 2 duplicate candidates, `proj_018`, 7 assignments without verdicts); SHA-256[:12] `b5c9da177cab` |
+| 9 | `cd api && ./.venv/Scripts/python.exe -m pytest tests/test_fixture_determinism.py -q` | **2 passed** — two clean imports (one via the alias, one via explicit variables) produced equivalent databases, row ids and relationships included |
 
 The exact commands behind rows 4 and 5:
 
@@ -48,6 +51,26 @@ cd .. && AXION_API_URL=http://127.0.0.1:8000 \
 `EVENT_START=` / `EVENT_END=` are passed empty on purpose in row 4: a developer's `.env` may pin a window,
 and an explicit value beats the fixture file by design, so clearing them is what lets `EVENT_SOURCE=fixtures`
 supply the closed one.
+
+```bash
+# 7 — the same dataset through the one-flag alias (Phase A1), on a spare port
+rm -f /c/tmp/axion-a1.db
+cd api && DOGFOOD_FIXTURE_MODE=true DATABASE_URL="sqlite+pysqlite:////tmp/axion-a1.db" \
+  EVENT_START= EVENT_END= EVENT_SOURCE= SEED_MODE= MOCK_GITHUB=true \
+  ./.venv/Scripts/python.exe -m app.seed
+cd api && DOGFOOD_FIXTURE_MODE=true DATABASE_URL="sqlite+pysqlite:////tmp/axion-a1.db" \
+  EVENT_START= EVENT_END= EVENT_SOURCE= SEED_MODE= MOCK_GITHUB=true \
+  ./.venv/Scripts/python.exe -m uvicorn app.main:app --port 8010 &
+cd .. && AXION_API_URL=http://127.0.0.1:8010 \
+  api/.venv/Scripts/python.exe api/scripts/dogfood_check.py .dogfood.toml
+
+# 8 and 9 — the fixture file alone, and the two-clean-import test
+api/.venv/Scripts/python.exe api/scripts/validate_fixtures.py
+cd api && ./.venv/Scripts/python.exe -m pytest tests/test_fixture_determinism.py -q
+```
+
+`EVENT_SOURCE=` and `SEED_MODE=` are passed empty in row 7 for the same reason: it proves the alias alone
+selects the dataset and the closed window, rather than a leftover value from this machine's `.env`.
 
 Both reports name the commit they were generated from, and both currently cite `239c53b` — the commit they
 were produced *from*, i.e. the parent of the commit that ships them. A report cannot embed the hash of a

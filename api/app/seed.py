@@ -392,8 +392,19 @@ def seed(reset: bool = False) -> dict:
 
 
 def seed_mode() -> str:
-    """Which dataset to seed: the crafted demo (`demo`) or the fixture file."""
-    return (os.environ.get("SEED_MODE") or "demo").strip().lower()
+    """Which dataset to seed: the crafted demo (`demo`) or the fixture file.
+
+    `DOGFOOD_FIXTURE_MODE=true` is the one-flag alias the acceptance brief names
+    — it selects the fixture dataset without asking anyone to remember
+    `SEED_MODE`, and `config.py` gives it the matching window and offline-login
+    semantics. An explicit `SEED_MODE` always wins, so the alias cannot change
+    what a deployment that already pinned a mode seeds.
+    """
+    explicit = (os.environ.get("SEED_MODE") or "").strip().lower()
+    if explicit:
+        return explicit
+    alias = (os.environ.get("DOGFOOD_FIXTURE_MODE") or "").strip().lower()
+    return "fixtures" if alias in {"1", "true", "yes", "on"} else "demo"
 
 
 def seed_fixtures(path: str | None = None) -> dict:

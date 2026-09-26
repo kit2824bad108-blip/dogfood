@@ -130,6 +130,14 @@ batches, duplicates, and an event that has already closed:
 EVENT_SOURCE=fixtures takes the window from fixtures.json, so the imported
 deadline is genuinely enforced rather than described.
 
+That is also a single flag:
+
+    DOGFOOD_FIXTURE_MODE=true
+
+it implies both variables above and enables the same offline sign-in / checker
+credential gate, and an explicit SEED_MODE or EVENT_SOURCE still wins. The
+checker headers .dogfood.toml reads are served either way.
+
 
 ------------------------------------------------------------------------------
 SIGNING IN — INCLUDING WITH THE NETWORK OFF
@@ -211,9 +219,19 @@ Where the checker's credentials come from (dev deployments only):
 The API also prints those four headers once at boot. Nothing is embedded in
 .dogfood.toml, so the manifest stays valid on any machine.
 
-The unit tests are separate and need no running server:
+The fixture file itself can be validated with no server at all:
 
-    api/.venv/Scripts/python.exe -m pytest -q     # from repo root
+    api/.venv/Scripts/python.exe api/scripts/validate_fixtures.py
+
+Exit 0 means structurally valid, 1 names the invalid records, 2 means the file
+could not be read. The rules are the ones the importer enforces before it writes
+anything, and the report contains no clock and no database state.
+
+The unit tests are separate and need no running server (run from api/ so the
+`app` package is importable), and they include the two-clean-import determinism
+check:
+
+    cd api && ./.venv/Scripts/python.exe -m pytest -q
     cd web && npm run typecheck
     cd web && npm run build
 

@@ -238,6 +238,7 @@ which keeps the session cookie same-origin and hides the API port.
 make test                                     # pytest + typecheck
 make acceptance                               # self-check via .dogfood.toml -> acceptance-report.txt
 make acceptance-axion                         # tier-by-tier suite -> acceptance-report.axion.txt
+python api/scripts/validate_fixtures.py       # fixture file only: ids, references, timestamps
 cd api && python -m pytest -q                 # or directly
 docker compose exec api python -m pytest -q    # no local Python setup needed
 cd web && npm run typecheck && npm run build
@@ -248,7 +249,9 @@ zero-variance judges and single-verdict judges), the blind-evaluation boundary, 
 the draft/deadline rules, the rubric weighting, the gallery and the CSV exports.
 
 The suite also covers the fixture importer's edge cases, duplicate and coverage handling, the balanced
-assignment planner and a regression guard on the demo numbers quoted above.
+assignment planner and a regression guard on the demo numbers quoted above — plus the role-by-role
+authorization matrix, the checker's header credentials, the fixture validator CLI and a two-clean-import
+determinism test.
 
 There are **two report artefacts**, and they do not overwrite each other:
 
@@ -277,6 +280,31 @@ All variables are documented in `.env.example`. The ones that matter most:
 | `MOCK_GITHUB` | Computes commit integrity from deterministic synthetic data. Keep `true` for offline demos. |
 | `SEED_DEMO` | Loads the demo dataset on boot. Set `false` for a clean event. |
 | `LOCAL_DEV_LOGIN` | Force the passwordless offline login on or off. Implied on by either flag above; never enable it for a live event. |
+| `DOGFOOD_FIXTURE_MODE` | One flag for the acceptance dataset: implies `SEED_MODE=fixtures` and `EVENT_SOURCE=fixtures`, and enables the same offline/checker gate as `SEED_DEMO`. Explicit `SEED_MODE` / `EVENT_SOURCE` / `LOCAL_DEV_LOGIN` values still win. |
+
+### Fixture mode and authentication
+
+```bash
+# the acceptance dataset: 40 projects, 12 judges, and an event that has closed
+DOGFOOD_FIXTURE_MODE=true python -m app.seed       # from api/
+DOGFOOD_FIXTURE_MODE=true python -m uvicorn app.main:app
+```
+
+The acceptance checker never logs in. It reads `GET /api/dev/checker-headers`, which returns the four
+roles as `Authorization: Bearer <token>` headers: `organizer` (`admin@fixtures.axion.dev`, the seeded
+admin), `judge_a` and `judge_b` (the first two seeded judges, `judge_01` / `judge_02`), and `participant`
+(the first seeded participant, `hacker01@fixtures.axion.dev`). The tokens are signed with `SECRET_KEY`,
+carry a fixed 2100 expiry so a committed report stays reproducible, and the endpoint returns **403**
+unless the deployment is explicitly a demo — `DOGFOOD_FIXTURE_MODE`, like `MOCK_GITHUB`, `SEED_DEMO` or
+`LOCAL_DEV_LOGIN`, is such a declaration. `.dogfood.toml` never embeds a token; it names the endpoint.
+[THREAT-MODEL.md](./THREAT-MODEL.md) records the residual risk.
+
+Two deterministic checks back the dataset itself up:
+
+```bash
+python api/scripts/validate_fixtures.py  # exit 0 valid / 1 invalid records / 2 unreadable
+cd api && python -m pytest tests/test_fixture_determinism.py -q   # two clean imports → equivalent data
+```
 
 ## Honest limitations
 

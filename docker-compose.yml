@@ -40,6 +40,10 @@ services:
       # env (default) or fixtures, which takes the event window from fixtures.json
       # so an imported closed deadline is genuinely enforced.
       EVENT_SOURCE: ${EVENT_SOURCE:-env}
+      # One-flag alias for `SEED_MODE=fixtures EVENT_SOURCE=fixtures`: runs the
+      # acceptance dataset and enforces its closed window. The explicit values
+      # above still win.
+      DOGFOOD_FIXTURE_MODE: ${DOGFOOD_FIXTURE_MODE:-false}
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
     ports:
       - "8000:8000"

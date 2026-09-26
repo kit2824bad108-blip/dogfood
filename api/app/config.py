@@ -93,6 +93,10 @@ class Settings:
     github_token: str | None
     mock_github: bool
     seed_demo: bool
+    # True when DOGFOOD_FIXTURE_MODE selects the fixture dataset. Kept as a
+    # field, not just an env lookup, so the gate it implies is visible in the
+    # settings object a test can inspect.
+    dogfood_fixture_mode: bool
     local_dev_login_override: bool
     api_public_url: str
 
@@ -112,19 +116,33 @@ class Settings:
     def local_dev_login(self) -> bool:
         """Offline sign-in for demos and air-gapped judging.
 
-        Gated on the two flags that already mean "this is not a production
-        deployment": MOCK_GITHUB and SEED_DEMO. A judge who turns off their
-        Wi-Fi can still get in, and a real deployment cannot accidentally
-        expose a passwordless login. See THREAT-MODEL.md.
+        Gated on the flags that already mean "this is not a production
+        deployment": MOCK_GITHUB, SEED_DEMO, and the DOGFOOD_FIXTURE_MODE alias,
+        which selects the fixture dataset and its already-closed window — an
+        explicit "run the acceptance/demo data" posture, not a production
+        switch. A judge who turns off their Wi-Fi can still get in, and a real
+        deployment cannot accidentally expose a passwordless login. See
+        THREAT-MODEL.md.
         """
-        return self.local_dev_login_override or self.mock_github or self.seed_demo
+        return (
+            self.local_dev_login_override
+            or self.mock_github
+            or self.seed_demo
+            or self.dogfood_fixture_mode
+        )
 
     @classmethod
     def from_env(cls) -> "Settings":
         now = datetime.now(timezone.utc)
         explicit_start = _env_dt("EVENT_START")
         explicit_end = _env_dt("EVENT_END")
-        if (_env("EVENT_SOURCE", "env") or "env").lower() in {"fixture", "fixtures"}:
+        # The one-flag alias the acceptance brief names: it selects the fixture
+        # dataset and, through the branch below, that dataset's own window. An
+        # explicit EVENT_SOURCE still wins, so the alias cannot quietly retarget
+        # an existing deployment.
+        fixture_mode = _env_bool("DOGFOOD_FIXTURE_MODE", False)
+        event_source = (_env("EVENT_SOURCE") or ("fixtures" if fixture_mode else "env")).lower()
+        if event_source in {"fixture", "fixtures"}:
             fixture_start, fixture_end = fixture_window()
             explicit_start = explicit_start or fixture_start
             explicit_end = explicit_end or fixture_end
@@ -157,6 +175,7 @@ class Settings:
             github_token=_env("GITHUB_TOKEN"),
             mock_github=_env_bool("MOCK_GITHUB", False),
             seed_demo=_env_bool("SEED_DEMO", False),
+            dogfood_fixture_mode=fixture_mode,
             local_dev_login_override=_env_bool("LOCAL_DEV_LOGIN", False),
             api_public_url=_env("API_PUBLIC_URL", "http://localhost:8000") or "",
         )

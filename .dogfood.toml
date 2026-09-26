@@ -216,6 +216,15 @@ role = "organizer"
 expect = 200
 
 [[checks]]
+id = "participant_surface"
+group = "AUTH"
+name = "Participant reaches their own submission surface"
+method = "GET"
+path = "/api/submissions/me"
+role = "participant"
+expect = 200
+
+[[checks]]
 id = "participant_forbidden"
 group = "AUTH"
 name = "Participant cannot read the organizer leaderboard"
