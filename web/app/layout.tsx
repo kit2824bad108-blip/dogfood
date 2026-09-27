@@ -34,8 +34,16 @@ export default async function RootLayout({ children }: { children: React.ReactNo
     <html lang="en" className={themeClass} suppressHydrationWarning>
       <body className="min-h-screen antialiased">
         <ThemeProvider>
+          <a
+            href="#main"
+            className="sr-only rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-50"
+          >
+            Skip to content
+          </a>
           <Nav />
-          <main className="mx-auto w-full max-w-6xl px-6 py-10">{children}</main>
+          <main id="main" tabIndex={-1} className="mx-auto w-full max-w-6xl px-6 py-10">
+            {children}
+          </main>
           {/* Bottom padding keeps the fixed settings control off the footer text. */}
           <footer className="mx-auto w-full max-w-6xl px-6 pb-24 pt-4 text-xs text-muted-foreground">
             Axion · submissions are judged on repository, documentation and craft first.

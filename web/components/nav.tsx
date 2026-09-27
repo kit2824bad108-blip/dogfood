@@ -4,11 +4,12 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 
+import { Deadline } from "@/components/deadline";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
-import type { Me } from "@/lib/types";
+import type { EventWindow, Me, PublicEvent } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 const linkClass =
@@ -16,6 +17,7 @@ const linkClass =
 
 export function Nav() {
   const [me, setMe] = useState<Me | null>(null);
+  const [eventWindow, setEventWindow] = useState<EventWindow | null>(null);
   const pathname = usePathname();
 
   useEffect(() => {
@@ -23,7 +25,29 @@ export function Nav() {
       .get<Me>("/auth/me")
       .then(setMe)
       .catch(() => setMe({ authenticated: false, user: null }));
+    // The deadline is the one number every role needs, so it lives in the header.
+    api
+      .get<PublicEvent>("/event")
+      .then((payload) => setEventWindow(payload.event.submission_window))
+      .catch(() => setEventWindow(null));
   }, []);
+
+  // `/judge/score/12` belongs to Judging, so matching the prefix keeps the nav
+  // honest one level down from the section it is named after.
+  function isActive(href: string) {
+    return pathname === href || pathname.startsWith(`${href}/`);
+  }
+
+  function goToSignIn() {
+    const anchor = document.getElementById("sign-in");
+    if (anchor) {
+      anchor.scrollIntoView({ behavior: "smooth" });
+      return;
+    }
+    // The form lives on the landing page: on any other route this button used to
+    // do nothing at all, because the element it looks for is not on the page.
+    window.location.href = "/#sign-in";
+  }
 
   async function signOut() {
     try {
@@ -58,21 +82,24 @@ export function Nav() {
           Axion
         </Link>
 
-        <nav className="flex items-center gap-0.5">
+        <nav aria-label="Primary" className="flex items-center gap-0.5">
           <div className="mr-1 hidden items-center gap-0.5 md:flex">
             {links.map((link) => (
               <Link
                 key={link.href}
                 href={link.href}
+                aria-current={isActive(link.href) ? "page" : undefined}
                 className={cn(
                   linkClass,
-                  pathname === link.href && "text-foreground",
+                  isActive(link.href) && "bg-secondary/70 text-foreground",
                 )}
               >
                 {link.label}
               </Link>
             ))}
           </div>
+
+          {eventWindow && <Deadline window={eventWindow} className="ml-1 hidden lg:inline-flex" />}
 
           <ThemeToggle />
 
@@ -90,26 +117,36 @@ export function Nav() {
               </Button>
             </div>
           ) : (
-            <Button
-              size="sm"
-              className="ml-1"
-              onClick={() => {
-                document.getElementById("sign-in")?.scrollIntoView({ behavior: "smooth" });
-              }}
-            >
+            <Button size="sm" className="ml-1" onClick={goToSignIn}>
               Sign in
             </Button>
           )}
         </nav>
       </div>
 
-      {/* Small screens get a second row rather than a hamburger: there are few links. */}
-      <div className="flex gap-1 overflow-x-auto border-t border-border/60 px-4 py-1.5 md:hidden">
-        {links.map((link) => (
-          <Link key={link.href} href={link.href} className={cn(linkClass, "shrink-0")}>
-            {link.label}
-          </Link>
-        ))}
+      {/* Small screens get a second row rather than a hamburger: there are few
+          links. The deadline rides along, because the screens least able to show
+          it in the header are exactly the ones that still need to know. */}
+      {/* Wraps rather than scrolls: a deadline that is clipped by the edge of its
+          own row is a deadline nobody reads. */}
+      <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 border-t border-border/60 px-4 py-1.5 lg:hidden">
+        <div className="flex gap-1 md:hidden">
+          {links.map((link) => (
+            <Link
+              key={link.href}
+              href={link.href}
+              aria-current={isActive(link.href) ? "page" : undefined}
+              className={cn(
+                linkClass,
+                "shrink-0",
+                isActive(link.href) && "bg-secondary/70 text-foreground",
+              )}
+            >
+              {link.label}
+            </Link>
+          ))}
+        </div>
+        {eventWindow && <Deadline window={eventWindow} className="shrink-0" />}
       </div>
     </header>
   );

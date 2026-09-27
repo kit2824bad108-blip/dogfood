@@ -1,5 +1,6 @@
 "use client";
 
+import { Check, Copy } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { RequireAuth } from "@/components/require-auth";
@@ -18,6 +19,19 @@ function TeamContent() {
   const [invite, setInvite] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  // Clipboard access can be denied (insecure origin, withheld permission), so the
+  // fallback selects the code instead of failing silently.
+  async function copyInviteCode(code: string) {
+    try {
+      await navigator.clipboard.writeText(code);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setError("Copying is blocked here — select the code and copy it manually.");
+    }
+  }
 
   async function refresh() {
     const data = await api.get<{ team: TeamSummary | null }>("/teams/me");
@@ -62,8 +76,38 @@ function TeamContent() {
           </CardHeader>
           <CardContent className="space-y-5">
             <div>
-              <Label>Invite code</Label>
-              <p className="mt-1 font-mono text-2xl tracking-[0.3em] text-primary">{team.invite_code}</p>
+              <Label htmlFor="invite-code">Invite code</Label>
+              <div className="mt-1 flex flex-wrap items-center gap-3">
+                <p
+                  id="invite-code"
+                  className="select-all font-mono text-2xl tracking-[0.3em] text-primary"
+                >
+                  {team.invite_code}
+                </p>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => copyInviteCode(team.invite_code)}
+                  aria-label={
+                    copied ? "Invite code copied" : "Copy invite code to the clipboard"
+                  }
+                >
+                  {copied ? (
+                    <>
+                      <Check className="h-3.5 w-3.5" aria-hidden />
+                      Copied
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="h-3.5 w-3.5" aria-hidden />
+                      Copy
+                    </>
+                  )}
+                </Button>
+              </div>
+              <p className="mt-1 text-xs text-muted-foreground" role="status">
+                {copied ? "Invite code copied to the clipboard." : ""}
+              </p>
             </div>
 
             <div>

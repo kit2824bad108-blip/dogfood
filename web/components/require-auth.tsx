@@ -1,7 +1,9 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 
+import { buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardTitle } from "@/components/ui/card";
 import { api } from "@/lib/api";
 import type { Me, Role } from "@/lib/types";
@@ -37,13 +39,25 @@ export function RequireAuth({
   }
 
   if (roles && !roles.includes(me.user.role)) {
+    // A wall with no door: the page said "not authorized" and left the user to
+    // find their own way back, which they had to do with the browser chrome.
     return (
       <Card>
-        <CardContent className="pt-6">
-          <CardTitle>Not authorized</CardTitle>
-          <CardDescription className="mt-2">
-            This page requires the {roles.join(" or ")} role. You are signed in as {me.user.role}.
-          </CardDescription>
+        <CardContent className="space-y-4 pt-6">
+          <div>
+            <CardTitle>Not authorized</CardTitle>
+            <CardDescription className="mt-2">
+              This page requires the {roles.join(" or ")} role. You are signed in as {me.user.role}.
+            </CardDescription>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Link href="/gallery" className={buttonVariants({ size: "sm" })}>
+              Browse the gallery
+            </Link>
+            <Link href="/" className={buttonVariants({ size: "sm", variant: "outline" })}>
+              Back to the event page
+            </Link>
+          </div>
         </CardContent>
       </Card>
     );

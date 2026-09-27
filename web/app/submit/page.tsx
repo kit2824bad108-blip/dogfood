@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 
+import { Deadline } from "@/components/deadline";
 import { RequireAuth } from "@/components/require-auth";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -43,18 +44,32 @@ function SubmissionContent() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState<string | null>(null);
+  // What the server last acknowledged, so "unsaved changes" is a fact about the
+  // form rather than a guess about whether the user typed something.
+  const [snapshot, setSnapshot] = useState<string>(JSON.stringify(EMPTY));
+  const dirty = JSON.stringify(form) !== snapshot;
+
+  // Closes the tab and loses a half-written submission: the one navigation a
+  // draft cannot survive, so the browser is asked to confirm it.
+  useEffect(() => {
+    if (!dirty) return;
+    const warn = (navigationEvent: BeforeUnloadEvent) => {
+      navigationEvent.preventDefault();
+      navigationEvent.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [dirty]);
 
   async function refresh() {
     const data = await api.get<{
       submission: Submission | null;
       team: TeamSummary | null;
-      window: EventWindow;
     }>("/submissions/me");
     setSubmission(data.submission);
     setTeam(data.team);
-    setEventWindow(data.window);
     if (data.submission) {
-      setForm({
+      const loaded: FormState = {
         title: data.submission.title,
         repo_url: data.submission.repo_url,
         docs_url: data.submission.docs_url ?? "",
@@ -62,7 +77,9 @@ function SubmissionContent() {
         video_url: data.submission.video_url ?? "",
         summary: data.submission.summary ?? "",
         track_id: data.submission.track_id ? String(data.submission.track_id) : "",
-      });
+      };
+      setForm(loaded);
+      setSnapshot(JSON.stringify(loaded));
     }
     setLoading(false);
   }
@@ -72,7 +89,19 @@ function SubmissionContent() {
       setError(errorMessage(caught));
       setLoading(false);
     });
-    api.get<PublicEvent>("/event").then(setEvent).catch(() => setEvent(null));
+    // The window comes from /event, not from /submissions/me: that endpoint omits
+    // it precisely when the caller has no team yet, which is the branch where a
+    // participant most needs to know how long is left.
+    api
+      .get<PublicEvent>("/event")
+      .then((payload) => {
+        setEvent(payload);
+        setEventWindow(payload.event.submission_window);
+      })
+      .catch(() => {
+        setEvent(null);
+        setEventWindow(null);
+      });
   }, []);
 
   async function save(status: SubmissionStatus) {
@@ -91,6 +120,7 @@ function SubmissionContent() {
         status,
       });
       setSubmission(data.submission);
+      setSnapshot(JSON.stringify(form));
       setSaved(
         status === "draft"
           ? "Draft saved. It stays invisible to judges until you submit it."
@@ -110,16 +140,24 @@ function SubmissionContent() {
   if (loading) return <p className="text-sm text-muted-foreground">Loading submission…</p>;
 
   if (!team) {
+    // The deadline still matters here: the team has to exist *before* the window
+    // closes, so the countdown is the reason this screen should feel urgent.
     return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Join a team first</CardTitle>
-          <CardDescription>Submissions belong to a team, so create or join one before submitting.</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <Button onClick={() => (window.location.href = "/team")}>Go to team setup</Button>
-        </CardContent>
-      </Card>
+      <div className="space-y-6">
+        <Deadline window={eventWindow} variant="card" withBar />
+        <Card>
+          <CardHeader>
+            <CardTitle>Join a team first</CardTitle>
+            <CardDescription>
+              Submissions belong to a team, so create or join one before submitting. The window
+              above is the same one your team will be judged on.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Button onClick={() => (window.location.href = "/team")}>Go to team setup</Button>
+          </CardContent>
+        </Card>
+      </div>
     );
   }
 
@@ -130,17 +168,9 @@ function SubmissionContent() {
 
   return (
     <div className="space-y-6">
-      {closed && (
-        <Card className="border-destructive/40 bg-destructive/5">
-          <CardContent className="pt-6 text-sm">
-            <p className="font-medium text-destructive">The submission window is closed.</p>
-            <p className="mt-1 text-muted-foreground">
-              It closed {eventWindow ? new Date(eventWindow.closes_at).toLocaleString() : ""}. The
-              API rejects writes against the server clock, so this page is read-only.
-            </p>
-          </CardContent>
-        </Card>
-      )}
+      {/* One notice, not two: the deadline card already reports the closed window
+          (and says what happens next), so the page does not repeat it. */}
+      <Deadline window={eventWindow} variant="card" withBar />
 
       <Card>
         <CardHeader>
@@ -254,8 +284,18 @@ function SubmissionContent() {
               />
             </div>
 
-            {error && <p className="text-sm text-destructive">{error}</p>}
-            {saved && <p className="text-sm text-success">{saved}</p>}
+            {/* Announced, not just coloured: a status change a screen reader
+                cannot hear is a status change half the users do not get. */}
+            {error && (
+              <p role="alert" className="text-sm text-destructive">
+                {error}
+              </p>
+            )}
+            {saved && (
+              <p role="status" className="text-sm text-success">
+                {saved}
+              </p>
+            )}
 
             <div className="flex flex-wrap items-center gap-2">
               {!submission || isDraft ? (
@@ -281,6 +321,9 @@ function SubmissionContent() {
                 <span className="text-xs text-muted-foreground">
                   A draft is not judged, not listed in the gallery, and has no Commit Integrity check.
                 </span>
+              )}
+              {dirty && !closed && (
+                <span className="text-xs text-warning">Unsaved changes</span>
               )}
             </div>
           </form>
@@ -308,6 +351,24 @@ function SubmissionContent() {
                 <p className="text-lg font-semibold">
                   {integrity.pct_in_window === null ? "—" : `${integrity.pct_in_window}%`}
                 </p>
+                {integrity.pct_in_window !== null && (
+                  <div
+                    className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-secondary"
+                    role="progressbar"
+                    aria-label="Commits inside the event window"
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-valuenow={Math.round(integrity.pct_in_window)}
+                  >
+                    <div
+                      className={cn(
+                        "h-full",
+                        integrity.flagged ? "bg-warning" : "bg-success",
+                      )}
+                      style={{ width: `${Math.min(100, Math.max(0, integrity.pct_in_window))}%` }}
+                    />
+                  </div>
+                )}
               </div>
               <div>
                 <Label>Source</Label>

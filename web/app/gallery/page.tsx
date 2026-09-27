@@ -1,6 +1,6 @@
 "use client";
 
-import { Github, Search } from "lucide-react";
+import { Github, Search, X } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
@@ -84,8 +84,18 @@ export default function GalleryPage() {
             onChange={(changeEvent) => setQuery(changeEvent.target.value)}
             placeholder="Search by project, team or summary…"
             aria-label="Search projects"
-            className="h-11 pl-9"
+            className="h-11 pl-9 pr-10"
           />
+          {query && (
+            <button
+              type="button"
+              onClick={() => setQuery("")}
+              aria-label="Clear the search"
+              className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+            >
+              <X className="h-4 w-4" aria-hidden />
+            </button>
+          )}
         </div>
 
         <div className="flex flex-wrap gap-2">
@@ -121,12 +131,32 @@ export default function GalleryPage() {
 
       {error && <p className="text-sm text-destructive">{error}</p>}
 
-      <p className="text-xs uppercase tracking-wide text-muted-foreground">
+      {/* Announced politely: a result count that changes silently is invisible to
+          anyone not looking at that corner of the page. */}
+      <p
+        role="status"
+        aria-live="polite"
+        className="text-xs uppercase tracking-wide text-muted-foreground"
+      >
         {loading ? "Searching…" : `${data?.count ?? 0} project${data?.count === 1 ? "" : "s"}`}
         {data?.query ? ` matching “${data.query}”` : ""}
       </p>
 
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+        {loading &&
+          !data &&
+          Array.from({ length: 6 }).map((_, index) => (
+            <Card key={`skeleton-${index}`} className="animate-pulse" aria-hidden>
+              <CardHeader>
+                <div className="h-4 w-2/3 rounded bg-secondary" />
+                <div className="mt-3 h-3 w-1/3 rounded bg-secondary" />
+              </CardHeader>
+              <CardContent className="space-y-2">
+                <div className="h-3 w-full rounded bg-secondary" />
+                <div className="h-3 w-5/6 rounded bg-secondary" />
+              </CardContent>
+            </Card>
+          ))}
         {(data?.projects ?? []).map((project) => (
           <Card key={project.id} className="flex flex-col">
             <CardHeader>

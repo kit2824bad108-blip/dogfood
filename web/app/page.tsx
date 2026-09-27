@@ -4,6 +4,7 @@ import { Braces, Container, Database, ShieldCheck, WifiOff } from "lucide-react"
 import Link from "next/link";
 import { useEffect, useState } from "react";
 
+import { Deadline } from "@/components/deadline";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -101,14 +102,22 @@ export default function LandingPage() {
     <div className="space-y-14">
       <section className="hero-glow grid-bg overflow-hidden rounded-2xl border border-border px-6 py-16 text-center sm:px-10">
         <div className="mx-auto max-w-3xl space-y-6">
-          <Badge variant="outline" className="border-primary/40 bg-primary/5 text-primary">
-            <span className="mr-1.5 inline-block h-1.5 w-1.5 rounded-full bg-primary align-middle" />
-            {closed
-              ? "Judging in progress — submissions are closed"
-              : `${stats?.submissions ?? 0} projects entered and ${
-                  stats?.verdicts ?? 0
-                } verdicts filed`}
-          </Badge>
+          <div className="flex flex-wrap items-center justify-center gap-2">
+            <Badge variant="outline" className="border-primary/40 bg-primary/5 text-primary">
+              <span className="mr-1.5 inline-block h-1.5 w-1.5 rounded-full bg-primary align-middle" />
+              {closed
+                ? "Judging in progress — submissions are closed"
+                : `${stats?.submissions ?? 0} projects entered and ${
+                    stats?.verdicts ?? 0
+                  } verdicts filed`}
+            </Badge>
+            {/* The badge above already says the window is closed, so the pill would
+                only repeat it. While the window is open the countdown is the one
+                number worth putting next to the headline. */}
+            {event && !event.event.submission_window.closed && (
+              <Deadline window={event.event.submission_window} variant="pill" />
+            )}
+          </div>
 
           <h1 className="text-4xl font-semibold leading-[1.08] tracking-tight sm:text-6xl">
             Hackathon judging is broken.

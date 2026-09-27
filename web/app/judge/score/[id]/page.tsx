@@ -5,6 +5,7 @@ import { useParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 
 import { RequireAuth } from "@/components/require-auth";
+import { Toast } from "@/components/toast";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -285,6 +286,7 @@ function ScoreContent() {
             </div>
 
             <Textarea
+              aria-label="Technical comment"
               value={technicalComment}
               onChange={(inputEvent) => setTechnicalComment(inputEvent.target.value)}
               placeholder="What is technically strong or weak about this repository?"
@@ -366,6 +368,7 @@ function ScoreContent() {
                   />
                 </div>
                 <Textarea
+                  aria-label="Presentation comment"
                   value={presentationComment}
                   onChange={(inputEvent) => setPresentationComment(inputEvent.target.value)}
                   placeholder="How convincing was the demo, given the code you just read?"
@@ -381,14 +384,24 @@ function ScoreContent() {
             <p className="text-sm text-destructive">{presentationError ?? "Presentation unavailable."}</p>
           )}
 
-          {message && <p className="text-sm text-success">{message}</p>}
-          {error && <p className="text-sm text-destructive">{error}</p>}
         </CardContent>
       </Card>
 
       <Link href="/judge" className="inline-block text-sm text-muted-foreground hover:text-foreground">
         ← Back to assignments
       </Link>
+
+      {/* Keyed on the text so each new message gets a fresh dismiss timer. */}
+      {error && (
+        <Toast key={`error:${error}`} tone="error" onDismiss={() => setError(null)}>
+          {error}
+        </Toast>
+      )}
+      {message && (
+        <Toast key={`message:${message}`} tone="success" onDismiss={() => setMessage(null)}>
+          {message}
+        </Toast>
+      )}
     </div>
   );
 }

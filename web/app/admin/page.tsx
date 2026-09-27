@@ -240,7 +240,7 @@ function AdminContent() {
             </CardHeader>
             <CardContent>
               <div className="overflow-x-auto">
-                <table className="w-full text-sm">
+                <table className="w-full min-w-[42rem] text-sm">
                   <thead>
                     <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted-foreground">
                       <th className="py-2 pr-3">#</th>
@@ -335,7 +335,7 @@ function AdminContent() {
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <table className="w-full text-sm">
+              <table className="w-full min-w-[42rem] text-sm">
                 <thead>
                   <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted-foreground">
                     <th className="py-2 pr-3">Judge</th>
@@ -401,7 +401,15 @@ function AdminContent() {
                     {judge.technical_pending > 0 ? ` · ${judge.technical_pending} pending` : ""}
                   </span>
                 </div>
-                <div className="h-1.5 w-full overflow-hidden rounded-full bg-secondary">
+                <div
+                  className="h-1.5 w-full overflow-hidden rounded-full bg-secondary"
+                  role="progressbar"
+                  aria-label={`${judge.name} technical grading progress`}
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={Math.round(judge.percent)}
+                  aria-valuetext={`${judge.technical_done} of ${judge.assigned} graded`}
+                >
                   <div className="h-full bg-primary transition-all" style={{ width: `${judge.percent}%` }} />
                 </div>
                 <p className="text-xs text-muted-foreground">
@@ -427,7 +435,7 @@ function AdminContent() {
           </CardHeader>
           <CardContent>
             <div className="overflow-x-auto">
-              <table className="w-full text-sm">
+              <table className="w-full min-w-[42rem] text-sm">
                 <thead>
                   <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted-foreground">
                     <th className="py-2 pr-3">Judge</th>
@@ -821,7 +829,7 @@ function AdminContent() {
           </CardHeader>
           <CardContent>
             <div className="max-h-[32rem] overflow-y-auto">
-              <table className="w-full text-sm">
+              <table className="w-full min-w-[42rem] text-sm">
                 <thead className="sticky top-0 bg-card">
                   <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted-foreground">
                     <th className="py-2 pr-3">Action</th>

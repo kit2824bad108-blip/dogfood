@@ -3,12 +3,13 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 
+import { Deadline } from "@/components/deadline";
 import { RequireAuth } from "@/components/require-auth";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { api, errorMessage } from "@/lib/api";
-import type { Assignment, Rubric } from "@/lib/types";
+import type { Assignment, EventWindow, PublicEvent, Rubric } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 type Progress = {
@@ -47,6 +48,7 @@ function JudgeContent() {
     percent_technical: 0,
   });
   const [rubric, setRubric] = useState<Rubric | null>(null);
+  const [eventWindow, setEventWindow] = useState<EventWindow | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -63,6 +65,12 @@ function JudgeContent() {
       })
       .catch((caught) => setError(errorMessage(caught)))
       .finally(() => setLoading(false));
+    // Judges need the deadline too: the window closes submissions, but knowing
+    // how long the field has left is the difference between calm and panic.
+    api
+      .get<PublicEvent>("/event")
+      .then((payload) => setEventWindow(payload.event.submission_window))
+      .catch(() => setEventWindow(null));
   }, []);
 
   const visible = useMemo(() => {
@@ -80,6 +88,8 @@ function JudgeContent() {
 
   return (
     <div className="space-y-6">
+      <Deadline window={eventWindow} variant="card" />
+
       <Card>
         <CardHeader>
           <CardTitle className="flex flex-wrap items-center justify-between gap-3">
@@ -112,7 +122,15 @@ function JudgeContent() {
             />
           </div>
 
-          <div className="h-2 w-full overflow-hidden rounded-full bg-secondary">
+          <div
+            className="h-2 w-full overflow-hidden rounded-full bg-secondary"
+            role="progressbar"
+            aria-label="Technical verdicts filed"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={percent}
+            aria-valuetext={`${progress.technical_done} of ${progress.total} graded`}
+          >
             <div className="h-full bg-primary transition-all" style={{ width: `${percent}%` }} />
           </div>
 

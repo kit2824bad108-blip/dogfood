@@ -13,7 +13,9 @@ const badgeVariants = cva(
         outline: "border-border text-foreground",
         destructive: "border-transparent bg-destructive text-destructive-foreground",
         success: "border-transparent bg-success text-success-foreground",
-        warning: "border-transparent bg-amber-500/20 text-amber-300",
+        // Token-driven, so it stays legible in both themes: the previous
+        // `text-amber-300` was unreadable on the light theme's near-white paper.
+        warning: "border-warning/30 bg-warning/10 text-warning",
         accent: "border-transparent bg-accent text-accent-foreground",
       },
     },
