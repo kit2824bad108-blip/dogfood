@@ -234,14 +234,40 @@ which keeps the session cookie same-origin and hides the API port.
 
 ## Tests and the acceptance report
 
+The commands below are the ones that were actually run for [VERIFICATION.md](./VERIFICATION.md);
+the `make` targets in [Makefile](./Makefile) are the same commands.
+
 ```bash
-make test                                     # pytest + typecheck
-make acceptance                               # self-check via .dogfood.toml -> acceptance-report.txt
-make acceptance-axion                         # tier-by-tier suite -> acceptance-report.axion.txt
-python api/scripts/validate_fixtures.py       # fixture file only: ids, references, timestamps
-cd api && python -m pytest -q                 # or directly
-docker compose exec api python -m pytest -q    # no local Python setup needed
-cd web && npm run typecheck && npm run build
+# The fast suite: in-process, in-memory SQLite, no services to start.
+cd api && python -m pytest -q -m "not postgres"
+
+# The PostgreSQL suite. A real server, the real migrations, the real trigger:
+# constraint, migration, judging, authorization, deadline, audit and concurrency
+# tests that SQLite cannot express.
+docker compose -f docker-compose.test.yml up -d --wait
+cd api && AXION_TEST_DATABASE_URL=postgresql+psycopg://axion:axion@127.0.0.1:5433/axion_test \
+  AXION_REQUIRE_POSTGRES=1 python -m pytest -q tests/pg
+docker compose -f docker-compose.test.yml down -v
+
+# The frontend has no separate test runner: typecheck and a production build are
+# the check, and both run in CI.
+cd web && npm ci && npm run typecheck && npm run build
+
+# The one-command path, then the two report artefacts it produces.
+docker compose up --build
+python api/scripts/dogfood_check.py .dogfood.toml --out acceptance-report.txt
+
+# The tier-by-tier suite expects the demo dataset (it asserts the crafted
+# rankings and the seeded .local accounts).
+python api/scripts/acceptance.py --out acceptance-report.axion.txt
+
+# The dataset itself: structure, references, timestamps, and two clean imports.
+python api/scripts/validate_fixtures.py
+cd api && python -m pytest tests/test_fixture_determinism.py -q
+
+# `python -m pytest -q` with no marker expression runs everything; `tests/pg`
+# skips itself (with the reason) when AXION_TEST_DATABASE_URL is unset, so a
+# missing server never looks like a passing database suite.
 ```
 
 The pytest suite covers the normalization math (including the harsh-6-versus-generous-8 claim,
@@ -260,7 +286,23 @@ There are **two report artefacts**, and they do not overwrite each other:
 | `acceptance-report.txt` | `api/scripts/dogfood_check.py` reading [.dogfood.toml](./.dogfood.toml) | The manifest-driven self-check: the routes, roles and status codes a checker should observe, so the contract and the check cannot drift apart. Credentials come from the endpoint the manifest names, never from a token in the file. |
 | `acceptance-report.axion.txt` | `api/scripts/acceptance.py` | The tier-by-tier suite (T0–T4 plus the bonus claims), which prints a SKIP with its reason wherever something cannot be observed in this environment |
 
-Neither is a run of an organiser-provided suite. **No organiser `.dogfood.toml`, `run.py` or
+## Continuous integration
+
+[.github/workflows/ci.yml](./.github/workflows/ci.yml) runs five jobs on every push and pull request. None
+of them needs a secret, a cloud account, a paid service or an external API: GitHub-hosted runners, a
+PostgreSQL service container, and the repository's own `fixtures.json` with `MOCK_GITHUB=true`.
+
+| Job | What it proves |
+| --- | -------------- |
+| `backend` | the fast suite (`pytest -m "not postgres"`) and `validate_fixtures.py` |
+| `postgres` | `alembic upgrade head` against an **empty** database, then the PostgreSQL suite — constraints, migrations, judging, authorization, deadlines, the append-only audit trigger, concurrency |
+| `frontend` | `npm ci`, `npm run typecheck`, `npm run build` |
+| `docker` | both images build from a clean checkout |
+| `acceptance` | the stack boots on the fixture dataset, `/api/health/ready` answers, `dogfood_check.py` is a **gate** (the job fails when any check fails), and the tier suite then runs against the same stack in demo mode; both reports are uploaded as artefacts |
+
+The command block above is the local reproduction of those jobs — same commands, same order.
+
+Neither report is a run of an organiser-provided suite. **No organiser `.dogfood.toml`, `run.py` or
 `fixtures.json` existed in this repository, in the hackathon brief, or anywhere on the build machine**, so
 rather than claim a run that never happened, Axion ships its own manifest and says so in the first lines of
 both reports. [VERIFICATION.md](./VERIFICATION.md) records what was executed and what was not.
@@ -316,16 +358,17 @@ cd api && python -m pytest tests/test_fixture_determinism.py -q   # two clean im
 - **Collusion inside a shared distribution is not detectable by the math.** Normalization exposes outlier
   grading, not a coordinated majority; the audit trail is the evidence layer for that.
 - **Participants are not emailed.** Judges are created by the organiser, who hands out credentials.
-- **`docker compose up` and `make` were not executed while building this**, because the build environment
-  has neither a Docker CLI nor `make`. Both are validated structurally (Compose parsed and checked for
-  service wiring, healthcheck and env completeness) and both reports were produced against the API running
-  directly under uvicorn with the Next.js frontend in production mode. [VERIFICATION.md](./VERIFICATION.md)
-  states this plainly rather than implying a green one-command boot.
+- **`make` was not executed while building this**, because `make` is not installed on the build machine;
+  the equivalent commands in the section above were run directly instead. `docker compose up --build` *was*
+  executed: both images build, all three containers reach healthy, and both acceptance artefacts in this
+  repository were regenerated against that stack. [VERIFICATION.md](./VERIFICATION.md) records the
+  commands and their output.
 - **Full coverage is the default model.** Every judge on every project is right at ten projects and wrong at
   five hundred, so balanced assignment exists as an explicit organiser action. It reports the number of
   connected components in the judge/project overlap graph: more than one means the ranking is really several
   rankings, and it says so.
 - **An imported dataset is not repaired.** A fixture with invalid records is refused whole rather than
   partially imported, because half an event is worse than none.
-- **The `docker` path is the only unverified claim.** Everything else in this README was executed; see
-  VERIFICATION.md for the exact commands and their output.
+- **What remains unexecuted is the organiser's own acceptance runner.** No organiser `.dogfood.toml`,
+  `run.py` or `fixtures.json` exists here, so the reports are Axion's own checks and say so in their first
+  lines. Everything else in this README was executed; see VERIFICATION.md for the exact commands and output.

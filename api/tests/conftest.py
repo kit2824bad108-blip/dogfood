@@ -13,7 +13,13 @@ from datetime import datetime, timedelta, timezone
 # closed-window path instead of the open one.
 _NOW = datetime.now(timezone.utc)
 
-os.environ["DATABASE_URL"] = "sqlite+pysqlite:///:memory:"
+# `AXION_TEST_DATABASE_URL` switches the whole suite onto a real PostgreSQL
+# server (`tests/pg` requires it); unset, the fast path stays in-memory SQLite and
+# needs no service at all. This has to happen before `app.config` is imported
+# below, because settings are read once.
+_TEST_DATABASE_URL = os.environ.get("AXION_TEST_DATABASE_URL", "").strip()
+USING_POSTGRES = _TEST_DATABASE_URL.startswith("postgresql")
+os.environ["DATABASE_URL"] = _TEST_DATABASE_URL or "sqlite+pysqlite:///:memory:"
 os.environ["SECRET_KEY"] = "test-secret-key"
 os.environ["MOCK_GITHUB"] = "true"
 os.environ["WEB_URL"] = "http://localhost:3000"

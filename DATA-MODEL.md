@@ -136,7 +136,7 @@ erDiagram
     }
     AUDIT_LOGS {
         int id PK
-        int actor_id FK "users.id, SET NULL"
+        int actor_id "historical id; deliberately not a foreign key"
         string actor_email "denormalised on purpose"
         string action
         string entity
@@ -253,8 +253,14 @@ FOR EACH ROW EXECUTE FUNCTION axion_audit_logs_immutable();
 
 Installed by `0001_initial` and dropped by its `downgrade()`. A compromised API key, a careless `psql`
 session and a rogue migration all hit the same exception. `actor_email` is denormalised deliberately: the
-trail must still name who did something after a user row is deleted, which is why `actor_id` is `SET NULL`
-while the email string survives.
+trail must still name who did something after a user row is deleted.
+
+`actor_id` carried a foreign key with `ON DELETE SET NULL` until migration `0005_audit_actor_is_historical`.
+PostgreSQL applies that action as an `UPDATE` of the audit row, which this trigger refuses — so a delete of a
+user with history failed outright, and the trail could neither be anonymised nor left alone. The foreign key
+is gone; `actor_id` is kept as the historical id it was at the time, verbatim, and the email string is what
+names the actor. Found by the PostgreSQL integration suite (`api/tests/pg/`), the only place the pair could
+be observed.
 
 `details` is JSON and is where the substance lives — previous and new score values, criterion breakdowns,
 export row counts, assignment counts, integrity percentages.

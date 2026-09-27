@@ -5,8 +5,9 @@ build machine, in order, with the results as observed — and, just as important
 and why.
 
 Build environment: Windows with Git Bash; Python 3.12.10 (`api/.venv`); Node v24.16.0 / npm 11.13.0.
-No Docker CLI and no `make` are installed, which is why the Docker path is the one thing marked unverified
-rather than asserted.
+Phase A3 added Docker Desktop 29.8.0 (Linux engine, WSL2) and a local PostgreSQL 16.10, so the Docker and
+PostgreSQL paths recorded below were executed rather than reviewed. `make` is still not installed, so that
+one row stays in "not executed".
 
 ## Executed
 
@@ -119,10 +120,8 @@ Not a summary of intent — these lines are from the reports themselves.
 
 | Thing | Why not | What would settle it |
 | ----- | ------- | -------------------- |
-| `docker compose up --build` | No Docker CLI on this machine | Install Docker Desktop, `docker compose down -v`, `docker compose up --build`, then watch `/api/health` |
-| The `make` targets | No `make` on Windows | Any Linux/macOS machine; each target is a two-line wrapper around the commands above |
-| The Postgres append-only trigger | The suite runs on SQLite; the trigger is installed by the `0001` migration and only exists in Postgres | `docker compose exec db psql -U axion -c "update audit_logs set action='x'"` should raise |
-| Alembic migrations against Postgres | Same reason — the local runs use `Base.metadata.create_all` through the seed | `docker compose exec api alembic upgrade head` on a fresh volume |
+| The `make` targets | No `make` on Windows | Any Linux/macOS machine; each target is a two-line wrapper around the commands in the table below |
+| Wi-Fi physically switched off | The host's radio cannot be toggled from here | Pull the network cable — see "The offline claim, specifically" below for what would still hold |
 | Live GitHub OAuth | No client id or secret were provided | Register an OAuth app, set `GITHUB_CLIENT_ID`/`GITHUB_CLIENT_SECRET`, sign in |
 | Commit history against the real GitHub API | `MOCK_GITHUB=true` everywhere, so only the deterministic path ran | Set `MOCK_GITHUB=false` with a `GITHUB_TOKEN` and re-check a submission |
 | Wi-Fi physically switched off | The host's radio cannot be toggled from here | Pull the network cable; every check above is loopback-only, and no build or run step contacts a third party |
@@ -136,8 +135,9 @@ passwordless login and the checker's headers are both issued locally. The one pl
 happen is commit-integrity checking against the GitHub API, and that path is explicitly switched to
 deterministic synthetic data by `MOCK_GITHUB=true`, which is also the default in `.env.example`.
 
-Where this falls short of the strongest possible claim: nobody physically disconnected the machine, and
-`docker compose up` was never run, so the one-command path is structurally reviewed rather than executed.
+Where this falls short of the strongest possible claim: nobody physically disconnected the machine. The
+Compose path has since been executed (Phase A3 below), including the two-container front door, so the
+one-command boot is observed rather than reviewed; the radio itself is the only untested part of the claim.
 
 ## Defects found while verifying this pass
 
@@ -163,3 +163,32 @@ Recorded because a verification pass that finds nothing is usually a pass that l
    spurious "invalid record" entries. Only people are checked for an email now.
 7. **An earlier report understated the test count** (`82 tests` hardcoded in a footer). Removed rather than
    updated, so it cannot go stale again.
+8. **The audit trail could not survive the deletion it was designed for** (found by the PostgreSQL suite,
+   fixed in Phase A3). `audit_logs.actor_id` was declared `FOREIGN KEY … ON DELETE SET NULL`, and
+   PostgreSQL applies that action as an `UPDATE` of the audit row — which the append-only trigger refuses.
+   The result was that deleting any user who had acted raised `audit_logs is append-only (attempted UPDATE)`
+   and the delete failed outright: the trail could be neither anonymised nor left alone. Migration
+   `0005_audit_actor_is_historical` drops the foreign key; `actor_id` stays as the id it was at the time and
+   `actor_email` remains the durable attribution, so history survives verbatim. SQLite has neither the
+   trigger nor the referential action, which is exactly why the fast suite could not have found it.
+
+## Phase A3 — PostgreSQL, Docker and CI (2026-09-27)
+
+Executed on the same machine once Docker Desktop 29.8.0 (Linux engine over WSL2) and PostgreSQL 16.10 were
+available. `make` is still absent, so its targets remain the one unexecuted path; each wraps the commands
+below.
+
+| # | Command | Observed result |
+| - | ------- | --------------- |
+| 10 | `python -m pytest -q --ignore=tests/pg` | **134 passed**, 0 failed, 0 skipped, 6 m 14 s — the fast suite, still entirely in-process and in-memory |
+| 11 | `AXION_TEST_DATABASE_URL=postgresql+psycopg://axion:axion@127.0.0.1:5433/axion_test AXION_REQUIRE_POSTGRES=1 python -m pytest -q tests/pg` | **113 passed**, 5 m 57 s. The first run found four failures: two expectation bugs in the new tests and one real defect (item 8 above) |
+| 12 | Empty → migrated → fixtures → application, on PostgreSQL: `psql -c "DROP SCHEMA public CASCADE" -c "CREATE SCHEMA public"`, `DATABASE_URL=… alembic upgrade head`, `DATABASE_URL=… python -c "from app import seed; seed.seed_fixtures()"` | Five migrations applied to an empty schema, `alembic_version` at `0005_audit_actor_is_historical`, then 40 projects / 12 judges / 40 teams / 48 participants / 131 reviews / 138 assignments imported, `closed_event: true` |
+| 13 | `DOGFOOD_FIXTURE_MODE=true EVENT_START= EVENT_END= docker compose up --build` | Three containers up, `axion-api-1` healthy; `/api/health/ready` → `{"ready":true,"checks":{"database":"ok","migrations":"ok","dataset":"61 users, 40 submissions"}}`; `/api/event` reports the fixture window 2026-08-01 → 2026-08-04 as `closed`; the gallery lists 40 projects; `web` answers 200; inside the container `alembic_version = 0005_audit_actor_is_historical` |
+| 14 | `AXION_API_URL=http://127.0.0.1:8000 python api/scripts/dogfood_check.py .dogfood.toml --out acceptance-report.txt` | **19 passed, 0 failed, 0 skipped** — the committed `acceptance-report.txt`, regenerated against the Compose stack; this artefact had previously been produced under uvicorn only |
+| 15 | `AXION_API_URL=http://127.0.0.1:8000 python api/scripts/acceptance.py --out acceptance-report.axion.txt` (demo mode) | **27 passed, 0 failed, 3 skipped** — the committed `acceptance-report.axion.txt`, regenerated against the Compose stack; the three skips are PDF certificates, pairwise mode and the closed-deadline check |
+| 16 | `git push origin main` → GitHub Actions | See the run list on the repository; the workflow is [.github/workflows/ci.yml](./.github/workflows/ci.yml) and every job is reproduced by the commands above |
+
+The first Docker build failed on `pip install` — `greenlet` came back as "from versions: none" while the
+Next.js image was downloading at the same time. Directly fetching the same wheel in the same base image
+succeeded, so it was a flaky index response rather than a real dependency problem; the Dockerfile now pins
+`--retries 6 --timeout 90` and the build is reproducible.

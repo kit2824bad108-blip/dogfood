@@ -124,6 +124,16 @@ def upgrade() -> None:
 
     # The audit trail is append-only. Enforce it in the database, not just in the
     # application layer, so a compromised API key still cannot rewrite history.
+    #
+    # Guarded by dialect: the trigger below is PL/pgSQL, which no other dialect
+    # parses. The migration chain as a whole targets PostgreSQL (0002 uses
+    # `ALTER TABLE ... ADD CONSTRAINT`, which SQLite cannot execute), so this guard
+    # does not make SQLite a supported migration target — it makes the failure on a
+    # non-PostgreSQL dialect happen at the step that is genuinely unsupported
+    # instead of as a syntax error here.
+    if op.get_bind().dialect.name != "postgresql":
+        return
+
     op.execute(
         """
         CREATE OR REPLACE FUNCTION axion_audit_logs_immutable()
@@ -144,8 +154,9 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.execute("DROP TRIGGER IF EXISTS axion_audit_logs_immutable ON audit_logs")
-    op.execute("DROP FUNCTION IF EXISTS axion_audit_logs_immutable()")
+    if op.get_bind().dialect.name == "postgresql":
+        op.execute("DROP TRIGGER IF EXISTS axion_audit_logs_immutable ON audit_logs")
+        op.execute("DROP FUNCTION IF EXISTS axion_audit_logs_immutable()")
     op.drop_table("audit_logs")
     op.drop_table("scores")
     op.drop_table("assignments")

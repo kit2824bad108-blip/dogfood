@@ -26,3 +26,7 @@ Thumbs.db
 # Local SQLite databases (created at runtime, never portable)
 *.db
 *.db-journal
+
+# Agent workspace: a portable PostgreSQL cluster, scratch logs and probe files.
+# Never part of the source tree, and never committed.
+.freebuff/

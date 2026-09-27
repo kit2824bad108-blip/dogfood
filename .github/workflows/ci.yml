@@ -1,0 +1,172 @@
+# Everything below runs with no secrets, no cloud account and no external
+# service: GitHub-hosted runners, the repository's own fixture dataset, and a
+# PostgreSQL service container. `MOCK_GITHUB=true` is the application default, so
+# nothing here calls the GitHub API.
+#
+#   backend     the fast suite (in-process, SQLite) — what a developer runs
+#   postgres    migrate from an *empty* database, then the integration suite that
+#               only runs against PostgreSQL (constraints, trigger, concurrency)
+#   frontend    typecheck + production build (the app has no separate test runner)
+#   docker      both images build from a clean checkout
+#   acceptance  the manifest check that produces `acceptance-report.txt` is a gate,
+#               and the tier suite that produces `acceptance-report.axion.txt` runs
+#               against the same stack in demo mode
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.12"
+  NODE_VERSION: "20"
+
+jobs:
+  backend:
+    name: Backend checks (fast suite)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: api/requirements.txt
+      - name: Install dependencies
+        run: pip install -r api/requirements.txt
+      - name: Validate the fixture dataset
+        working-directory: api
+        run: python scripts/validate_fixtures.py
+      - name: Unit and integration tests (SQLite)
+        working-directory: api
+        run: python -m pytest -q -m "not postgres"
+
+  postgres:
+    name: PostgreSQL integration tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: axion
+          POSTGRES_PASSWORD: axion
+          POSTGRES_DB: axion_test
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U axion -d axion_test"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    env:
+      AXION_TEST_DATABASE_URL: postgresql+psycopg://axion:axion@127.0.0.1:5433/axion_test
+      # A missing or unreachable server is a failure here, not a skip: these tests
+      # exist to run somewhere real.
+      AXION_REQUIRE_POSTGRES: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: api/requirements.txt
+      - name: Install dependencies
+        run: pip install -r api/requirements.txt
+      - name: Migrate an empty database to head
+        working-directory: api
+        env:
+          DATABASE_URL: ${{ env.AXION_TEST_DATABASE_URL }}
+        run: alembic upgrade head
+      - name: Constraint, migration, judging, authorization, deadline, audit and concurrency suites
+        working-directory: api
+        run: python -m pytest -q tests/pg
+
+  frontend:
+    name: Frontend checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install dependencies
+        working-directory: web
+        run: npm ci --no-audit --no-fund
+      - name: Typecheck
+        working-directory: web
+        run: npm run typecheck
+      - name: Production build
+        working-directory: web
+        run: npm run build
+
+  docker:
+    name: Docker images build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the API and web images
+        run: docker compose build
+
+  acceptance:
+    name: Official acceptance (manifest check is a gate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: api/requirements.txt
+      - name: Install dependencies
+        run: pip install -r api/requirements.txt
+      - name: Start the stack on the fixture dataset
+        # DOGFOOD_FIXTURE_MODE is one flag: seed fixtures.json, take the event
+        # window from it (already closed), and enable the checker's header
+        # credentials. No organiser manifest or external service is involved.
+        env:
+          DOGFOOD_FIXTURE_MODE: "true"
+        run: docker compose up -d --build
+      - name: Wait for readiness
+        run: |
+          for attempt in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8000/api/health/ready > /dev/null; then
+              echo "ready after ${attempt} attempt(s)"
+              curl -sS http://127.0.0.1:8000/api/health/ready
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "the API never became ready:" >&2
+          docker compose logs api >&2
+          exit 1
+      - name: Manifest-driven acceptance check (fails the job on any failed check)
+        run: python api/scripts/dogfood_check.py .dogfood.toml --out acceptance-report.txt
+      - name: Tier-by-tier suite (T0-T4)
+        run: |
+          docker compose down -v
+          docker compose up -d --build
+          for attempt in $(seq 1 60); do
+            curl -fsS http://127.0.0.1:8000/api/health/ready > /dev/null && break
+            sleep 5
+          done
+          python api/scripts/acceptance.py --out acceptance-report.axion.txt
+      - name: Upload the acceptance reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: acceptance-reports
+          path: |
+            acceptance-report.txt
+            acceptance-report.axion.txt
+          if-no-files-found: warn
+      - name: Container logs on failure
+        if: failure()
+        run: docker compose logs --tail 200

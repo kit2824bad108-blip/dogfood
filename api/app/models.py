@@ -10,6 +10,7 @@ from typing import Optional
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     DateTime,
     Float,
     ForeignKey,
@@ -30,6 +31,11 @@ SUBMISSION_STATUSES = ("draft", "submitted")
 
 class User(Base):
     __tablename__ = "users"
+    # Domain checks live in the database as well as in pydantic (see migration
+    # 0004): a row that arrives by any other path is still refused.
+    __table_args__ = (
+        CheckConstraint("role IN ('admin', 'judge', 'participant')", name="ck_users_role"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
@@ -108,7 +114,15 @@ class Prize(Base):
 
 class Submission(Base):
     __tablename__ = "submissions"
-    __table_args__ = (UniqueConstraint("team_id", name="uq_submissions_team"),)
+    __table_args__ = (
+        UniqueConstraint("team_id", name="uq_submissions_team"),
+        CheckConstraint("status IN ('draft', 'submitted')", name="ck_submissions_status"),
+        CheckConstraint(
+            "integrity_pct_in_window IS NULL "
+            "OR (integrity_pct_in_window >= 0 AND integrity_pct_in_window <= 100)",
+            name="ck_submissions_integrity_pct",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     team_id: Mapped[int] = mapped_column(ForeignKey("teams.id", ondelete="CASCADE"), index=True)
@@ -172,6 +186,14 @@ class Score(Base):
     __tablename__ = "scores"
     __table_args__ = (
         UniqueConstraint("judge_id", "submission_id", name="uq_score_pair"),
+        CheckConstraint(
+            "technical_score IS NULL OR (technical_score >= 1 AND technical_score <= 10)",
+            name="ck_scores_technical_range",
+        ),
+        CheckConstraint(
+            "presentation_score IS NULL OR (presentation_score >= 1 AND presentation_score <= 10)",
+            name="ck_scores_presentation_range",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -227,6 +249,7 @@ class ScoreCriterion(Base):
     __tablename__ = "score_criteria"
     __table_args__ = (
         UniqueConstraint("score_id", "key", name="uq_score_criterion_key"),
+        CheckConstraint("value >= 1 AND value <= 10", name="ck_score_criteria_value_range"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -248,9 +271,12 @@ class AuditLog(Base):
     __tablename__ = "audit_logs"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    actor_id: Mapped[Optional[int]] = mapped_column(
-        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
-    )
+    # Historical, not a live reference. `actor_id` is the id the actor had when the
+    # entry was written, and `actor_email` is the durable attribution. A foreign
+    # key with `ON DELETE SET NULL` here would make deleting a user *edit the
+    # trail* — and the append-only trigger refuses that write, which left the
+    # delete impossible instead. Migration 0005 drops it.
+    actor_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     actor_email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     action: Mapped[str] = mapped_column(String(80), index=True)
     entity: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)
