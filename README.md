@@ -2,6 +2,8 @@
 
 **The fundamental engine for trustless hackathon execution.**
 
+[![CI](https://github.com/kit2824bad108-blip/dogfood/actions/workflows/ci.yml/badge.svg)](https://github.com/kit2824bad108-blip/dogfood/actions/workflows/ci.yml)
+
 Hackathon judging is broken. It relies on opaque averaging, emotional bias from flashy demos, and
 logistical friction. Axion is an open-source, self-hostable hackathon lifecycle platform that replaces
 subjective averaging with mathematically defensible Z-score normalization and enforces blind technical
@@ -300,7 +302,9 @@ PostgreSQL service container, and the repository's own `fixtures.json` with `MOC
 | `docker` | both images build from a clean checkout |
 | `acceptance` | the stack boots on the fixture dataset, `/api/health/ready` answers, `dogfood_check.py` is a **gate** (the job fails when any check fails), and the tier suite then runs against the same stack in demo mode; both reports are uploaded as artefacts |
 
-The command block above is the local reproduction of those jobs — same commands, same order.
+The command block above is the local reproduction of those jobs — same commands, same order. The first run
+against them ([#36321264917](https://github.com/kit2824bad108-blip/dogfood/actions/runs/36321264917)) is green
+in all five jobs, including the acceptance gate.
 
 Neither report is a run of an organiser-provided suite. **No organiser `.dogfood.toml`, `run.py` or
 `fixtures.json` existed in this repository, in the hackathon brief, or anywhere on the build machine**, so
