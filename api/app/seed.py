@@ -408,16 +408,18 @@ def seed_mode() -> str:
 
 
 def seed_fixtures(path: str | None = None) -> dict:
-    """Seed from `fixtures.json` instead of the crafted demo dataset.
+    """Seed from the fixture dataset instead of the crafted demo one.
 
-    Two things this deliberately does *not* do:
+    The file at the repository root is the organisers' own `fixtures.json`, loaded
+    as published: all 41 projects including the duplicate submission, all 40 teams
+    including the three that share the name "StillTrail", and its already-closed
+    window. Axion's own generated dataset still ships, at
+    `data/axion-fixtures.json`, because every number published in README.md and
+    JUDGING.md was computed against it.
 
-      * it does not pretend the fixture file came from anyone but Axion — see its
-        own `note` field and README.md;
-      * it does not replace the demo dataset as the default. Every number published
-        in README.md and JUDGING.md was computed against the crafted demo seed, and
-        a fixture file whose event window is already closed is the right dataset
-        for exercising deadline enforcement, not for demonstrating a live event.
+    A refused import is fatal. An instance that claims to be running the fixture
+    dataset while holding an empty event is worse than one that does not boot at
+    all: the acceptance report would then be describing a portal that is not there.
     """
     from . import fixtures as fixtures_module
 
@@ -427,10 +429,18 @@ def seed_fixtures(path: str | None = None) -> dict:
             return {"skipped": True, "reason": "an admin account already exists"}
         payload = fixtures_module.load_fixture(path)
         summary = fixtures_module.apply_fixture(db, payload, mode="apply")
+        if summary.get("refused"):
+            raise RuntimeError(
+                "the fixture dataset was refused and nothing was written: "
+                f"{summary['refused']} "
+                f"({len(summary.get('invalid') or [])} invalid records) "
+                "-- run `python -m app.seed` to see them"
+            )
         db.commit()
         return {
             "skipped": False,
             "mode": "fixtures",
+            "dialect": payload.get("dialect"),
             "source": summary.get("source"),
             "records": summary.get("records"),
             "applied": summary.get("applied"),
@@ -496,6 +506,8 @@ def _demo_preview() -> None:
 
 
 if __name__ == "__main__":
+    from . import access
+
     if seed_mode() in {"fixture", "fixtures"}:
         fixture_summary = seed_fixtures()
         if fixture_summary.get("skipped"):
@@ -510,3 +522,8 @@ if __name__ == "__main__":
         else:
             print(f"[axion] seeded {summary}")
         _demo_preview()
+
+    # The four literal headers an acceptance checker attaches. Printed by this
+    # process as well as on API boot: this is the process that loaded the dataset,
+    # and the brief's story has the seed printing them.
+    access.announce()

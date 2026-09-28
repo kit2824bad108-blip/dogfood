@@ -1,10 +1,11 @@
 """Fixture import: the messy cases, and the promise that nothing is half-written.
 
-The pure tests run against the real committed `fixtures.json`, so the dataset the
-README talks about is the dataset under test. The behavioural tests use a small
-inline fixture, because what matters is the *rules* — a missing score is not a
-zero, a dry run writes nothing, an invalid record refuses the whole import —
-rather than volume.
+The pure tests run against Axion's own committed dataset, `data/axion-fixtures.json`
+— the one every number in README.md and JUDGING.md was computed against. The
+organisers' published `fixtures.json` sits at the repository root and is covered
+separately, in `test_dogfood_fixture.py`. The behavioural tests use a small inline
+fixture, because what matters is the *rules* — a missing score is not a zero, a dry
+run writes nothing, an invalid record refuses the whole import — rather than volume.
 """
 from __future__ import annotations
 
@@ -17,12 +18,16 @@ from app.assignment import apply_plan, coverage_snapshot, plan_balanced_assignme
 from app.models import ImportBatch, Score, Submission, User
 from app.timeutil import iso
 
+# Axion's own generated dataset. The organisers' fixtures.json is at the root and
+# is deliberately a *different* file: see test_dogfood_fixture.py.
+AXION_FIXTURE = "data/axion-fixtures.json"
+
 
 # ── the committed dataset, diagnosed ─────────────────────────────────────────
 
 
 def test_the_committed_fixture_is_structurally_valid():
-    payload = fixtures.load_fixture()
+    payload = fixtures.load_fixture(AXION_FIXTURE)
     assert fixtures.validate(payload) == []
     assert len(payload["projects"]) == 40
     assert len(payload["judges"]) == 12
@@ -30,7 +35,7 @@ def test_the_committed_fixture_is_structurally_valid():
 
 
 def test_diagnostics_find_every_edge_case_the_dataset_was_built_for():
-    diagnostics = fixtures.diagnose(fixtures.load_fixture())
+    diagnostics = fixtures.diagnose(fixtures.load_fixture(AXION_FIXTURE))
 
     assert diagnostics["invalid"] == []
     assert diagnostics["zero_variance_judges"] == ["judge_11"]
@@ -62,7 +67,7 @@ def test_diagnostics_find_every_edge_case_the_dataset_was_built_for():
 
 
 def test_validation_reports_what_is_wrong_rather_than_guessing():
-    payload = fixtures.load_fixture()
+    payload = fixtures.load_fixture(AXION_FIXTURE)
     payload = {**payload}
     payload["projects"] = [
         *payload["projects"],

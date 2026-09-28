@@ -35,6 +35,7 @@ APP_TABLES = {
     "duplicate_reviews",
 }
 EXPECTED_CHAIN = [
+    "0006_imported_reality_is_partial",
     "0005_audit_actor_is_historical",
     "0004_integrity_constraints",
     "0003_import_and_coverage",
@@ -137,6 +138,31 @@ def test_the_audit_trail_has_no_foreign_key_that_could_rewrite_it(pg_migrated, q
     assert not Base.metadata.tables["audit_logs"].columns["actor_id"].foreign_keys, (
         "the models and the migration must agree about this; see 0005"
     )
+
+
+def test_the_uniqueness_imported_data_needs_is_partial(pg_migrated, query):
+    """0006 narrowed two unique constraints instead of dropping them.
+
+    The organisers' fixture data violates both as they were written: one team (of
+    40) submits twice, and three teams share the name "StillTrail". What matters
+    about the replacement is that it is *partial* — it still holds for every row
+    this application creates, so no guarantee was traded away for the import.
+    """
+    definitions = dict(
+        query(
+            "SELECT indexname, indexdef FROM pg_indexes "
+            "WHERE tablename IN ('submissions', 'teams') "
+            "ORDER BY indexname"
+        )
+    )
+
+    assert "duplicate_of_submission_id IS NULL" in definitions["uq_submissions_team_canonical"]
+    assert "source_ref IS NULL" in definitions["uq_teams_name_app"]
+
+    # The broad constraints are gone rather than supplemented: keeping them would
+    # have made the import impossible again for a database that has run 0006.
+    assert "uq_submissions_team" not in definitions
+    assert "uq_teams_name" not in definitions
 
 
 # ── earlier schema → head ────────────────────────────────────────────────────

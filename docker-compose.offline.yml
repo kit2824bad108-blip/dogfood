@@ -6,19 +6,21 @@
 # run inside that same network:
 #
 #   probe     proof that egress fails and Axion still answers
-#   runner    the acceptance checker (api/scripts/dogfood_check.py)
+#   runner    Axion's own deeper self-check (api/scripts/dogfood_check.py reading
+#             api/scripts/selfcheck.toml). The organisers' run.py is a host-side
+#             script and is run as the brief says: `python3 run.py .dogfood.toml`
+#             against the published portal port.
 #   workflow  the write path end to end (api/scripts/offline_workflow.py)
 #
-# Usage (fixture dataset — the acceptance dataset):
+# Usage (the default posture — the organisers' fixture dataset, already closed):
 #
-#   EVENT_START= EVENT_END= DOGFOOD_FIXTURE_MODE=true \
-#     docker compose -f docker-compose.yml -f docker-compose.offline.yml up --build -d
+#   docker compose -f docker-compose.yml -f docker-compose.offline.yml up --build -d
 #   docker compose -f docker-compose.yml -f docker-compose.offline.yml run --rm probe
 #   docker compose -f docker-compose.yml -f docker-compose.offline.yml run --rm runner
 #
 # Usage (demo dataset — the open window, so the workflow can write):
 #
-#   EVENT_START= EVENT_END= SEED_MODE=demo \
+#   SEED_MODE=demo EVENT_SOURCE=env EVENT_START= EVENT_END= \
 #     docker compose -f docker-compose.yml -f docker-compose.offline.yml up --build -d
 #   docker compose -f docker-compose.yml -f docker-compose.offline.yml run --rm workflow
 #
@@ -53,12 +55,12 @@ services:
     environment:
       AXION_API_URL: http://api:8000
     volumes:
-      - ./.dogfood.toml:/manifest/.dogfood.toml:ro
+      - ./api/scripts/selfcheck.toml:/manifest/selfcheck.toml:ro
     command:
       [
         "python",
         "scripts/dogfood_check.py",
-        "/manifest/.dogfood.toml",
+        "/manifest/selfcheck.toml",
       ]
     depends_on:
       api:

@@ -227,17 +227,36 @@ columns, while Postgres returns aware ones. `api/app/timeutil.py` is the single 
 stored datetime means — a naive one is UTC — and every serializer emits through `iso()`, so a browser can
 never read a deadline as local time by accident.
 
-**The checker.** `.dogfood.toml` declares the routes, roles, status expectations, dataset sizes and even the
-gallery search probe; `api/scripts/dogfood_check.py` reads it with the standard library and contains no route
-list of its own, so the contract and the check cannot drift apart. Credentials are **fetched** from
-`GET /api/dev/checker-headers` (gated on the same flag as the passwordless dev login) and never embedded in
-the file, which is why the manifest is valid on any machine and contains no secret. The one write the
-checker attempts — a submission against the closed fixture event — is *skipped* rather than sent when the
-event is open, so a read-only run cannot mutate the instance it is measuring.
+**Two dialects, one loader.** The organisers' `fixtures.json` and Axion's own generated dataset share a job
+and almost no field names: theirs gives a project `team`/`track` (string ids), a review a `criteria` map, a
+team a list of member *addresses* and a judge a list of *tracks*; ours gives a project `team_id`/`track_id`, a
+review a verdict, teams a participant list and judges explicit assignments. `api/app/fixture_dialects.py`
+translates theirs into the canonical shape the importer already reads, so `validate`, `diagnose`,
+`duplicate_candidates` and `apply_fixture` stay the single implementation of "what a dataset is" and the
+translation is one file a reviewer can read. Two consequences are deliberate: a participant's display name
+is derived from their address because the file carries no names, and a verdict is the app's own
+weight-normalized mean of the file's criteria rather than a second opinion invented by the importer.
 
-`api/scripts/acceptance.py` remains the tier-by-tier tool (T0–T4 plus bonus claims) and writes to a separate
-file. Neither report is a run of an organiser-provided suite: none existed, and both say so in their first
-lines rather than letting the artefact imply otherwise.
+**The checker.** There are two, and only one of them is ours to interpret.
+
+`.dogfood.toml` at the root is the **organisers'** manifest, read by **their** `run.py` (committed verbatim):
+base url, tier claim, four literal header strings and five routes. The headers are literal because their
+checker never logs in and contains no code that could fetch a credential. `api/app/access.py` issues and
+gates them: four fixed cookies, accepted only while the deployment has declared itself a demo, so a live
+event answers 401 to all four. `api/tests/test_manifest_contract.py` checks the other direction — that every
+route the manifest names is one the API serves, that the four headers resolve to the roles the manifest
+implies, that `peer_scores` names judge A and *not* judge B, and that the numbers in `[dataset]` are the ones
+`fixtures.json` holds. A rename in one place and not the other fails in CI.
+
+`api/scripts/selfcheck.toml` is **Axion's own** manifest, read by `api/scripts/dogfood_check.py` with the
+standard library: nineteen checks rather than their seven, including the blind gate, all three CSV exports,
+the Z-score leaderboard and both sides of four role boundaries. It fetches signed bearer tokens from
+`GET /api/dev/checker-headers` so it stays valid on any machine, and the one write it attempts is *skipped*
+rather than sent when the event is open, so a read-only run cannot mutate what it measures.
+
+They are separate files and separate reports on purpose. Nineteen assertions of ours folded into the artefact
+the organisers read would blur the only line that matters in an acceptance report: who ran it.
+`api/scripts/acceptance.py` remains the third, tier-by-tier tool (T0–T4 plus bonus claims).
 
 ## Testing strategy
 

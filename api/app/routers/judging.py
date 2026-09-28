@@ -29,6 +29,27 @@ router = APIRouter(prefix="/api/judging", tags=["judging"])
 JUDGE_ROLES = ("judge", "admin")
 
 
+def _judge_by_ref(db: Session, reference: str) -> User | None:
+    """A judge, by the dataset's own identifier (`jdg_01`) or by internal id.
+
+    The dataset's id is checked first because that is what an acceptance manifest
+    can name without first asking the database what a row's primary key is.
+    """
+    reference = str(reference or "").strip()
+    if not reference:
+        return None
+    found = db.scalar(
+        select(User).where(User.role == "judge", User.source_ref == reference)
+    )
+    if found is not None:
+        return found
+    if reference.isdigit():
+        candidate = db.get(User, int(reference))
+        if candidate is not None and candidate.role == "judge":
+            return candidate
+    return None
+
+
 def _assignment(db: Session, judge_id: int, submission_id: int) -> Assignment | None:
     return db.scalar(
         select(Assignment).where(
@@ -154,6 +175,100 @@ def my_assignments(
             "technical_pending": len(assignments) - technical_done,
             "presentation_done": sum(1 for a in assignments if a["presentation_submitted"]),
             "percent_technical": round(technical_done / len(assignments) * 100, 1) if assignments else 0.0,
+        },
+    }
+
+
+@router.get("/scores")
+def my_scores(
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role(*JUDGE_ROLES)),
+) -> dict:
+    """The caller's own filed scores.
+
+    This is `judge_scores` in the acceptance manifest: a judge reading their own
+    record answers 200, a participant is refused by the role guard (403), and an
+    unauthenticated caller gets 401.
+    """
+    return _score_record(db, user, viewer=user)
+
+
+@router.get("/judges/{judge_ref}/scores")
+def judge_scores_by_ref(
+    judge_ref: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role(*JUDGE_ROLES)),
+) -> dict:
+    """Another judge's scores, refused unless it is the caller's own record.
+
+    This is the boundary the acceptance suite weights most heavily, and it is
+    deliberately *not* the blind-evaluation gate below. That gate lifts once a
+    judge has filed their own technical verdict; this one never lifts. A judge
+    cannot read a peer's numbers at any point in an event, and the refusal is
+    issued here — in the layer `curl` arrives at — rather than by hiding a link.
+
+    403 rather than 404 is deliberate: the caller is authenticated, and the
+    manifest expects exactly 401 or 403.
+    """
+    target = _judge_by_ref(db, judge_ref)
+    if target is None:
+        raise HTTPException(status_code=404, detail="No such judge")
+    if target.id != user.id and user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Judges cannot read another judge's scores",
+        )
+    return _score_record(db, target, viewer=user)
+
+
+def _score_record(db: Session, target: User, *, viewer: User) -> dict:
+    """Every technical verdict one judge has filed, with the criteria behind it."""
+    rows = db.execute(
+        select(Score, Submission, Team)
+        .join(Submission, Submission.id == Score.submission_id)
+        .join(Team, Team.id == Submission.team_id)
+        .where(Score.judge_id == target.id, Score.technical_score.isnot(None))
+        .order_by(Submission.id)
+    ).all()
+
+    scores = [
+        {
+            "submission_id": submission.id,
+            "title": submission.title,
+            "team": team.name,
+            "track_id": submission.track_id,
+            "technical_score": score.technical_score,
+            "technical_comment": score.technical_comment,
+            "presentation_score": score.presentation_score,
+            "presentation_comment": score.presentation_comment,
+            "submitted_at": iso(score.technical_submitted_at),
+            "criteria": _criteria_values(db, score),
+            "duplicate_of_submission_id": submission.duplicate_of_submission_id,
+        }
+        for score, submission, team in rows
+    ]
+    values = [row["technical_score"] for row in scores]
+
+    return {
+        "judge": {
+            "id": target.id,
+            "source_ref": target.source_ref,
+            "name": target.name or target.email,
+            "email": target.email,
+        },
+        "scores": scores,
+        "summary": {
+            "filed": len(scores),
+            "mean": round(sum(values) / len(values), 2) if values else None,
+        },
+        "rubric": _public_rubric(db),
+        # Who is asking, and whether this is their own record: an organiser can
+        # read any judge's, and saying so in the payload keeps the permission
+        # visible instead of implied.
+        "viewer": {
+            "id": viewer.id,
+            "role": viewer.role,
+            "own_record": target.id == viewer.id,
         },
     }
 

@@ -43,10 +43,32 @@ router = APIRouter(prefix="/api/admin", tags=["admin"])
 ADMIN_ROLES = ("admin",)
 
 
+def _canonical_only(statement):
+    """Rank canonical submissions. Duplicates are reported, never ranked.
+
+    A submission marked as a duplicate of another would otherwise compete against
+    the very entry it duplicates — the same work taking two places. It is excluded
+    from the ranking and counted in `duplicates_excluded` so the exclusion is
+    visible rather than silent; the organiser sees the pair on the duplicates
+    screen and decides.
+    """
+    return statement.where(Submission.duplicate_of_submission_id.is_(None))
+
+
+def duplicates_excluded(db: Session) -> int:
+    return db.scalar(
+        select(func.count(Submission.id)).where(
+            Submission.duplicate_of_submission_id.isnot(None)
+        )
+    ) or 0
+
+
 def _records(db: Session) -> list[zscore.ScoreRecord]:
     rows = db.execute(
-        select(Score.judge_id, Score.submission_id, Score.technical_score).where(
-            Score.technical_score.isnot(None)
+        _canonical_only(
+            select(Score.judge_id, Score.submission_id, Score.technical_score)
+            .join(Submission, Submission.id == Score.submission_id)
+            .where(Score.technical_score.isnot(None))
         )
     ).all()
     return [zscore.ScoreRecord(judge_id=j, submission_id=s, score=float(t)) for j, s, t in rows]
@@ -54,16 +76,20 @@ def _records(db: Session) -> list[zscore.ScoreRecord]:
 
 def _title_map(db: Session) -> dict[int, dict]:
     rows = db.execute(
-        select(Submission.id, Submission.title, Submission.repo_url, Team.name)
-        .join(Team, Team.id == Submission.team_id)
+        _canonical_only(
+            select(Submission.id, Submission.title, Submission.repo_url, Team.name).join(
+                Team, Team.id == Submission.team_id
+            )
+        )
     ).all()
     return {sid: {"title": title, "repo_url": repo, "team": team} for sid, title, repo, team in rows}
 
 
 def _track_map(db: Session) -> dict[int, str]:
     rows = db.execute(
-        select(Submission.id, Track.name)
-        .join(Track, Track.id == Submission.track_id)
+        _canonical_only(
+            select(Submission.id, Track.name).join(Track, Track.id == Submission.track_id)
+        )
     ).all()
     return {sid: name for sid, name in rows}
 
@@ -73,7 +99,10 @@ def _expected_coverage(db: Session) -> dict[int, int]:
     rows = db.execute(
         select(Assignment.submission_id, func.count(Assignment.id))
         .join(Submission, Submission.id == Assignment.submission_id)
-        .where(Submission.status == "submitted")
+        .where(
+            Submission.status == "submitted",
+            Submission.duplicate_of_submission_id.is_(None),
+        )
         .group_by(Assignment.submission_id)
     ).all()
     return {submission_id: count for submission_id, count in rows}
@@ -172,6 +201,7 @@ def leaderboard(db: Session = Depends(get_db), user: User = Depends(require_role
         "unranked": unranked,
         "coverage_summary": {
             "minimum_judges": zscore.MINIMUM_JUDGES,
+            "duplicates_excluded": duplicates_excluded(db),
             "ranked": len(rows),
             "provisional": len(provisional),
             "provisional_ids": provisional,

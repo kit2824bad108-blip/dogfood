@@ -307,8 +307,48 @@ really several separate rankings, which the response says rather than hides.
 
 The demo dataset stays full-coverage. Every number in section 7, in README.md and in the committed reports
 was computed against it, and a plan that silently rewrote those numbers would make the documentation untrue.
+The organisers' dataset is not full-coverage and is not made so: its coverage is what the file contains,
+and section 10 documents it as it is.
 
-## 10. Threats to validity
+## 10. Judging the organisers' dataset
+
+Sections 1–9 describe the crafted demo dataset, and every number in them was computed against it. The
+dataset `docker compose up` actually seeds is the organisers' `fixtures.json`, which arrives with its own
+shape and its own awkward cases, so the four decisions it forces are written down here rather than left in
+the code.
+
+**Judges are assigned by declared track.** The file lists `judges[].tracks` and never says which projects a
+judge was given. So every judge covers every submission in a track they declared, which is a defensible
+reading of the file's own data and is what makes the resulting coverage honest rather than invented: 30
+judges and 8 tracks produce **199 assignments**, of which **126 carry a verdict**. The missing 73 are the
+file's unfinished review batches, preserved as thin coverage — six projects have two reviews, none has
+zero, and none has more than five.
+
+**The rubric is derived from the file's own criteria, with equal weights.** Every score carries
+`{functionality, quality, innovation}` and no weights. The importer builds one rubric from those keys in
+first-seen order (not alphabetical, which would silently reorder a published rubric) with equal weights
+(33.33% each), and the judge's verdict is the app's own `weighted_technical_score()` over them — the same
+function the scoring API uses, so an imported verdict and a live one mean the same thing. The per-criterion
+values are stored beside the verdict, so the derivation is checkable and a later re-weighting cannot
+rewrite it.
+
+**Verdicts stay on the file's 1–5 scale.** Nothing is rescaled to the demo dataset's 1–10. Multiplying
+someone else's data by two to fit a display range is inventing precision, and the Z-score stage normalizes
+per judge anyway, so the scale cancels: what a judge's distribution contributes is relative, not absolute.
+An operator comparing the two datasets should expect different absolute numbers and the same mathematics.
+
+**The duplicate is imported, not collapsed.** `prj_41` is a second submission from `tm_07` with `prj_07`'s
+repository URL. It is stored as its own row, marked `duplicate_of_submission_id`, scored by its own four
+judges, and excluded from the public gallery and the leaderboard — where it would otherwise compete against
+the very project it duplicates. The organiser's duplicates screen shows the pair for a decision, and
+nothing is deleted on the strength of a string comparison. That the schema now permits this is the point of
+migration `0006`; see [DATA-MODEL.md](./DATA-MODEL.md).
+
+Both datasets go through the same normalization engine, the same rubric weighting and the same coverage
+accounting. What differs is the input, which is exactly the difference the brief's shared-fixtures
+requirement exists to expose.
+
+## 11. Threats to validity
 
 Stated plainly, because a scoring system that hides its weaknesses is not defensible:
 

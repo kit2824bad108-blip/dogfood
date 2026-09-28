@@ -50,7 +50,57 @@ def serialize_submission(submission: Submission, team: Team | None = None) -> di
     }
 
 
-@router.post("")
+async def require_open_window(
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+) -> None:
+    """Refuse a write from a closed event before its body is even validated.
+
+    Declared at the route level so it runs ahead of body validation. For a closed
+    event the answer is always "the deadline has passed" — not a schema error
+    about a field nobody is allowed to write anyway. It is also what makes the
+    acceptance probe `POST {"title", "summary"}` report the deadline rather than
+    a 422: the refusal is the deadline's, which is the claim being checked.
+
+    Authentication still comes first, because it is a dependency of this one: an
+    anonymous write is 401 whatever the state of the clock.
+
+    The body is read here anyway, unsafely and without validating it, so the audit
+    trail still records what the participant was trying to do. A refusal that
+    cannot say what it refused is a smaller trail than this feature deserves.
+    """
+    if not submission_window_closed():
+        return
+
+    attempted_status: str | None = None
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001 - a body we cannot read is not a reason to 500
+        body = None
+    if isinstance(body, dict):
+        raw_status = body.get("status")
+        attempted_status = str(raw_status) if raw_status is not None else None
+
+    audit.record(
+        db,
+        "submission.rejected_after_deadline",
+        actor=user,
+        ip=client_ip(request),
+        details={
+            "attempted_status": attempted_status,
+            "deadline": event_window()["closes_at"],
+            "refused_before_body_validation": True,
+        },
+    )
+    db.commit()
+    raise HTTPException(
+        status_code=403,
+        detail="The submission window is closed — no further edits are accepted",
+    )
+
+
+@router.post("", dependencies=[Depends(require_open_window)])
 def upsert_submission(
     payload: SubmissionUpsertRequest,
     request: Request,
@@ -79,24 +129,20 @@ def upsert_submission(
             raise HTTPException(status_code=400, detail="That track does not exist")
 
     team = db.get(Team, member.team_id)
-    submission = db.scalar(select(Submission).where(Submission.team_id == member.team_id))
+    # A team may hold a second submission that is marked as a duplicate of the
+    # first (an imported dataset can contain one). Edits address the canonical row
+    # only: a participant saving their project must not be quietly editing the
+    # duplicate instead, and a duplicate is never allowed to become canonical by
+    # being written over.
+    submission = db.scalar(
+        select(Submission)
+        .where(
+            Submission.team_id == member.team_id,
+            Submission.duplicate_of_submission_id.is_(None),
+        )
+        .order_by(Submission.id)
+    )
     created = submission is None
-
-    if submission_window_closed():
-        audit.record(
-            db,
-            "submission.rejected_after_deadline",
-            actor=user,
-            entity="submission",
-            entity_id=submission.id if submission else None,
-            ip=client_ip(request),
-            details={"attempted_status": payload.status, "deadline": event_window()["closes_at"]},
-        )
-        db.commit()
-        raise HTTPException(
-            status_code=403,
-            detail="The submission window is closed — no further edits are accepted",
-        )
 
     if submission is not None and submission.status == "submitted" and payload.status == "draft":
         raise HTTPException(
@@ -163,10 +209,30 @@ def my_submission(db: Session = Depends(get_db), user: User = Depends(current_us
     if member is None:
         return {"submission": None, "team": None}
     team = db.get(Team, member.team_id)
-    submission = db.scalar(select(Submission).where(Submission.team_id == member.team_id))
+    submitted = db.scalars(
+        select(Submission).where(Submission.team_id == member.team_id).order_by(Submission.id)
+    ).all()
+    canonical = next(
+        (row for row in submitted if row.duplicate_of_submission_id is None), None
+    )
+    # Named explicitly rather than silently dropped: a team looking at their one
+    # submission should be able to see that a second, duplicate-looking one exists
+    # and that an organiser is reviewing it.
+    duplicates = [row for row in submitted if row.duplicate_of_submission_id is not None]
     return {
-        "submission": serialize_submission(submission, team) if submission else None,
+        "submission": serialize_submission(canonical, team) if canonical else None,
         "team": {"id": team.id, "name": team.name, "invite_code": team.invite_code} if team else None,
+        "duplicates": [
+            {
+                "id": row.id,
+                "title": row.title,
+                "repo_url": row.repo_url,
+                "submitted_at": iso(row.submitted_at),
+                "duplicate_of_submission_id": row.duplicate_of_submission_id,
+                "note": "Under review as a possible duplicate; nothing was deleted.",
+            }
+            for row in duplicates
+        ],
         "window": event_window(),
     }
 

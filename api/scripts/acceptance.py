@@ -5,17 +5,24 @@
     python api/scripts/acceptance.py            # prints the report
     python api/scripts/acceptance.py --out acceptance-report.axion.txt
 
-This suite writes `acceptance-report.axion.txt`. The repository's
-`acceptance-report.txt` belongs to the manifest-driven self-check
-(`api/scripts/dogfood_check.py` reading `.dogfood.toml`), and the two are kept
-separate so neither artefact silently overwrites the other.
+This suite writes `acceptance-report.axion.txt`. Three artefacts, three authors,
+none overwriting another:
 
-This is **Axion's own** acceptance suite. No organiser-provided acceptance
-script, Postman collection or test harness was present in this repository or on
-the machine it was built on, so rather than claim a run that never happened, this
-drives the real API over HTTP and reports what it actually observes. Read-only
-checks run first; the mutating checks (registration, a submission, a new judge)
-come last so they cannot perturb the normalization proof above them.
+    acceptance-report.txt             the organisers' run.py reading the root
+                                      `.dogfood.toml` — the receipt the brief asks for
+    acceptance-report.selfcheck.txt   api/scripts/dogfood_check.py reading
+                                      api/scripts/selfcheck.toml — nineteen checks
+    acceptance-report.axion.txt       this file — the tier ladder, T0 to T4,
+                                      plus the bonus claims
+
+This one is a walk of the tier ladder rather than a manifest: it asks the
+questions the readers of T1–T4 ask, including the ones that only make sense
+against an **open** event, which is why it runs against the crafted demo dataset
+(the fixture dataset's window closed on 2026-03-01, so a submission cannot be
+made into it). It drives the real API over HTTP and reports what it actually
+observes. Read-only checks run first; the mutating checks (registration, a
+submission, a new judge) come last so they cannot perturb the normalization proof
+above them.
 
 Exit code is 0 only if nothing failed. SKIP means "not verifiable in this
 environment", and every skip says why.

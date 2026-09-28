@@ -9,8 +9,8 @@ these tests freeze. Nothing here consults a client-supplied timestamp, and
 even when it is offered.
 
 The window used is the one the committed fixture dataset declares
-(2026-08-01 → 2026-08-04, closed), which is the window a fixture-mode deployment
-enforces. `RUNNING_TESTS` therefore tests the deadline that ships.
+(2026-02-26 → 2026-03-01T18:00Z, closed), which is the window a fixture-mode
+deployment enforces. `RUNNING_TESTS` therefore tests the deadline that ships.
 """
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ from app.services import assign_judges
 
 pytestmark = pytest.mark.postgres
 
-FIXTURE_CLOSE = datetime(2026, 8, 4, tzinfo=timezone.utc)
+FIXTURE_CLOSE = datetime(2026, 3, 1, 18, 0, tzinfo=timezone.utc)
 CLOSED_DETAIL = "The submission window is closed"
 
 WINDOW_READERS = (
@@ -173,7 +173,10 @@ def test_after_the_deadline_a_submission_is_refused_and_audited(
     assert entry is not None, "a refused write is worth a record"
     assert entry.actor_email == project["participant"].email
     assert entry.details["attempted_status"] == "submitted"
-    assert entry.details["deadline"].startswith("2026-08-04")
+    assert entry.details["deadline"].startswith("2026-03-01")
+    # The refusal happens before the body is validated, so the trail says so
+    # rather than implying a request that got as far as the schema.
+    assert entry.details["refused_before_body_validation"] is True
 
 
 def test_a_client_timestamp_cannot_reopen_the_window(client, auth, clock, db, project):

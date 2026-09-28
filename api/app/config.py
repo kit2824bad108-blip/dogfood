@@ -11,6 +11,8 @@ import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
+from . import fixture_dialects
+
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 try:
@@ -69,23 +71,36 @@ def fixtures_path() -> str:
     return _env("FIXTURES_PATH") or os.path.join(REPO_ROOT, "fixtures.json")
 
 
-def fixture_window() -> tuple[datetime | None, datetime | None]:
-    """The event window declared by the fixture dataset, if there is one.
-
-    An imported dataset brings its own deadline, and a closed fixture event only
-    means anything if the server actually enforces *that* deadline. `EVENT_SOURCE`
-    selects it; an explicit EVENT_START/EVENT_END still wins over the file.
-    """
+def _fixture_payload() -> dict:
+    """The configured fixture file, or an empty mapping if it cannot be read."""
     try:
         with open(fixtures_path(), encoding="utf-8") as handle:
             payload = json.load(handle)
     except (OSError, ValueError):
-        return None, None
-    event = payload.get("event") or {}
-    return (
-        _parse_dt(event.get("starts_at")),
-        _parse_dt(event.get("closes_for_submissions_at") or event.get("ends_at")),
-    )
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def fixture_window() -> tuple[datetime | None, datetime | None]:
+    """The event window declared by the fixture dataset, if there is one.
+
+    An imported dataset brings its own deadline, and a closed fixture event only
+    means anything if the server actually enforces *that* deadline. Both fixture
+    dialects are read — the organisers' file names only `submissions_close`, from
+    which the start is derived backwards.
+    """
+    return fixture_dialects.window_from_fixture(_fixture_payload())
+
+
+def fixture_event_name() -> str | None:
+    """The event name the dataset declares.
+
+    In fixture mode this replaces EVENT_NAME, because the seeded data and the
+    name in the header have to describe the same event. A portal that runs
+    "Sample Hack 2026" whose deadline is the fixture's, while announcing itself as
+    something else, is a portal nobody can trust the screen of.
+    """
+    return fixture_dialects.event_name_from_fixture(_fixture_payload())
 
 
 @dataclass(frozen=True)
@@ -108,6 +123,13 @@ class Settings:
     # field, not just an env lookup, so the gate it implies is visible in the
     # settings object a test can inspect.
     dogfood_fixture_mode: bool
+    # True when SEED_MODE selects the fixture dataset. A deployment that seeds an
+    # imported dataset is an explicitly non-production posture for the same reason
+    # SEED_DEMO is: it is running published sample data, not an event. It also
+    # decides whether the checker's literal headers are accepted, so relying on
+    # MOCK_GITHUB alone to imply it would make the acceptance run depend on an
+    # unrelated flag.
+    fixture_dataset: bool
     local_dev_login_override: bool
     api_public_url: str
 
@@ -140,6 +162,7 @@ class Settings:
             or self.mock_github
             or self.seed_demo
             or self.dogfood_fixture_mode
+            or self.fixture_dataset
         )
 
     @classmethod
@@ -153,10 +176,17 @@ class Settings:
         # an existing deployment.
         fixture_mode = _env_bool("DOGFOOD_FIXTURE_MODE", False)
         event_source = (_env("EVENT_SOURCE") or ("fixtures" if fixture_mode else "env")).lower()
+        fixture_name = None
         if event_source in {"fixture", "fixtures"}:
             fixture_start, fixture_end = fixture_window()
-            explicit_start = explicit_start or fixture_start
-            explicit_end = explicit_end or fixture_end
+            fixture_name = fixture_event_name()
+            # In fixture mode the dataset's window is authoritative, and an
+            # explicit EVENT_START/EVENT_END does *not* override it. Seeding an
+            # event that has already closed and then letting a value from the
+            # environment re-open it would make the acceptance check pass or fail
+            # on local configuration rather than on the code. A deployment that
+            # wants a different window sets EVENT_SOURCE=env.
+            explicit_start, explicit_end = fixture_start, fixture_end
         if explicit_end is not None:
             # An explicit close time is authoritative: an organiser who sets a
             # past window gets a closed event, which is what the fixture dataset
@@ -178,7 +208,7 @@ class Settings:
             cookie_name="axion_session",
             cookie_secure=_env_bool("COOKIE_SECURE", False),
             session_max_age_seconds=int(_env("SESSION_MAX_AGE", str(60 * 60 * 24 * 14)) or 0),
-            event_name=_env("EVENT_NAME", "Axion Hackathon") or "",
+            event_name=fixture_name or _env("EVENT_NAME", "Axion Hackathon") or "",
             event_start=event_start,
             event_end=event_end,
             github_client_id=_env("GITHUB_CLIENT_ID"),
@@ -187,6 +217,7 @@ class Settings:
             mock_github=_env_bool("MOCK_GITHUB", False),
             seed_demo=_env_bool("SEED_DEMO", False),
             dogfood_fixture_mode=fixture_mode,
+            fixture_dataset=(_env("SEED_MODE", "") or "").lower() in {"fixture", "fixtures"},
             local_dev_login_override=_env_bool("LOCAL_DEV_LOGIN", False),
             api_public_url=_env("API_PUBLIC_URL", "http://localhost:8000") or "",
         )

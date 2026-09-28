@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 
-from . import devtokens
+from . import access
 from .config import settings
 from .readiness import readiness_report
 from .routers import admin, admin_import, auth, devtools, event, judging, submissions, teams
@@ -15,9 +15,9 @@ from .routers import admin, admin_import, auth, devtools, event, judging, submis
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     # A checker attaches headers instead of performing a login round-trip, so the
-    # credentials it needs are printed once at boot. Dev deployments only, and
-    # silent on an empty database.
-    devtokens.announce()
+    # literal headers it needs are printed once at boot, in the shape the brief's
+    # story shows. Dev deployments only, and silent on an empty database.
+    access.announce()
     yield
 
 

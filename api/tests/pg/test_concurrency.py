@@ -87,7 +87,13 @@ def _submission(db, team_id: int, title: str) -> Submission:
 
 
 def test_two_simultaneous_submissions_for_one_team(db, team, constraint_name):
-    """Two writers, one team: `uq_submissions_team` decides, not the request order."""
+    """Two writers, one team: `uq_submissions_team_canonical` decides.
+
+    The index is partial (`WHERE duplicate_of_submission_id IS NULL`), so this is
+    also the assertion that narrowing it did not weaken it: neither racer sets a
+    duplicate marker, so exactly one of them wins — decided by the database, not
+    by the request order.
+    """
     team_id = team["team"].id
 
     def insert(_index: int):
@@ -105,7 +111,7 @@ def test_two_simultaneous_submissions_for_one_team(db, team, constraint_name):
     refused = loser(race(insert))
 
     assert isinstance(refused, IntegrityError)
-    assert constraint_name(refused) == "uq_submissions_team"
+    assert constraint_name(refused) == "uq_submissions_team_canonical"
     assert db.scalar(select(func.count(Submission.id))) == 1
 
 
@@ -159,7 +165,7 @@ def test_two_simultaneous_teams_with_the_same_name(db, constraint_name):
     refused = loser(race(insert))
 
     assert isinstance(refused, IntegrityError)
-    assert constraint_name(refused) == "uq_teams_name"
+    assert constraint_name(refused) == "uq_teams_name_app"
     assert db.scalar(select(func.count(Team.id)).where(Team.name == "Same Name Team")) == 1
 
 

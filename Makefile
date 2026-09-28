@@ -1,6 +1,7 @@
-.PHONY: up down reset logs seed venv test test-api test-web acceptance acceptance-axion build clean
+.PHONY: up down reset logs seed venv test test-api test-web acceptance acceptance-selfcheck acceptance-axion build clean
 
-# The one command that matters.
+# The one command that matters. Seeds the organisers' fixtures.json, takes the
+# event window from it (already closed), and prints the checker's test logins.
 up:
 	docker compose up --build
 
@@ -35,17 +36,30 @@ test-api:
 test-web:
 	cd web && npm run typecheck
 
-# The manifest-driven self-check, read from .dogfood.toml. This writes the
-# report the challenge asks for, and the report itself states on its face that
-# it is Axion's own check rather than an organiser-provided suite.
+# The organisers' acceptance report: their run.py, their fixtures.json, and the
+# manifest they read at the root of this repository. Standard library only, any
+# Python 3. This is the artefact the brief asks for, and it is committed as
+# printed -- failures included -- rather than edited by hand.
+#
+#   make up            # portal on http://localhost:3000, seeded, already closed
+#   make acceptance
 acceptance:
+	python3 run.py .dogfood.toml > acceptance-report.txt
+	@echo "acceptance-report.txt written by the organisers' run.py"
+
+# Axion's own deeper check: nineteen questions against the same instance, from
+# api/scripts/selfcheck.toml. Deliberately a separate file and a separate report,
+# so nothing Axion asserts about itself can be confused with what was verified.
+acceptance-selfcheck:
 	@PY=python; \
 	if [ -x api/.venv/bin/python ]; then PY=api/.venv/bin/python; \
 	elif [ -f api/.venv/Scripts/python.exe ]; then PY=api/.venv/Scripts/python.exe; fi; \
-	$$PY api/scripts/dogfood_check.py .dogfood.toml --out acceptance-report.txt
+	$$PY api/scripts/dogfood_check.py api/scripts/selfcheck.toml --out acceptance-report.selfcheck.txt
 
-# The tier-by-tier suite (T0–T4 + bonuses). Kept separately so the two artefacts
-# never overwrite each other.
+# The tier-by-tier suite (T0-T4 + bonuses), run against the demo dataset: it
+# exercises the write path, which needs an open window.
+#
+#   SEED_MODE=demo make up && make acceptance-axion
 acceptance-axion:
 	@PY=python; \
 	if [ -x api/.venv/bin/python ]; then PY=api/.venv/bin/python; \

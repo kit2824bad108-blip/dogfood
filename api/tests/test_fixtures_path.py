@@ -42,7 +42,13 @@ def test_the_loader_reads_the_named_file(tmp_path, monkeypatch):
     monkeypatch.setenv("FIXTURES_PATH", str(target))
 
     assert fixtures_module.default_fixture_path() == target
-    assert fixtures_module.load_fixture() == MINI
+    # `load_fixture` returns the canonical shape whatever dialect the file was
+    # written in, so the comparison is on the records it declared rather than on
+    # the whole document (the canonical form adds the dialect and per-team ids).
+    payload = fixtures_module.load_fixture()
+    assert payload["projects"] == MINI["projects"]
+    assert payload["event"]["ends_at"] == MINI["event"]["ends_at"]
+    assert payload["dialect"] == "axion"
 
 
 def test_the_event_window_follows_the_named_file(tmp_path, monkeypatch):
@@ -62,7 +68,8 @@ def test_an_explicit_relative_path_is_read_beside_the_named_file(tmp_path, monke
 
     # A relative path resolves beside the configured fixture, not beside the
     # repository root, so FIXTURES_PATH relocates a deployment's datasets.
-    assert fixtures_module.load_fixture(target.name) == MINI
+    payload = fixtures_module.load_fixture(target.name)
+    assert payload["projects"] == MINI["projects"]
 
 
 def test_unset_means_the_repository_root(monkeypatch):

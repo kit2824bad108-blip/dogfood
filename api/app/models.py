@@ -14,12 +14,14 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     JSON,
     String,
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -55,10 +57,27 @@ class User(Base):
 
 class Team(Base):
     __tablename__ = "teams"
+    __table_args__ = (
+        # A team name is unique *as created in this application*, where 409 is the
+        # answer an organiser expects. An imported dataset is exempt: real events
+        # contain repeated team names (the fixture dataset has "StillTrail" three
+        # times), and renaming them to fit the schema would be the import lying
+        # about its input. See migration 0006.
+        Index(
+            "uq_teams_name_app",
+            "name",
+            unique=True,
+            sqlite_where=text("source_ref IS NULL"),
+            postgresql_where=text("source_ref IS NULL"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    name: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(255), index=True)
     invite_code: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    # The imported dataset's own identifier for this team. Identity is never a
+    # name: names repeat, ids do not.
+    source_ref: Mapped[Optional[str]] = mapped_column(String(120), nullable=True, index=True)
     created_by: Mapped[Optional[int]] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
@@ -115,7 +134,17 @@ class Prize(Base):
 class Submission(Base):
     __tablename__ = "submissions"
     __table_args__ = (
-        UniqueConstraint("team_id", name="uq_submissions_team"),
+        # One *live* submission per team. A second row is allowed only when it is
+        # marked as a duplicate of another, which is how an organiser compares a
+        # double submission before deciding. Two writers racing to create the same
+        # team's submission still produce exactly one winner. See migration 0006.
+        Index(
+            "uq_submissions_team_canonical",
+            "team_id",
+            unique=True,
+            sqlite_where=text("duplicate_of_submission_id IS NULL"),
+            postgresql_where=text("duplicate_of_submission_id IS NULL"),
+        ),
         CheckConstraint("status IN ('draft', 'submitted')", name="ck_submissions_status"),
         CheckConstraint(
             "integrity_pct_in_window IS NULL "
@@ -144,7 +173,12 @@ class Submission(Base):
     # External (often string) identifier from the imported dataset — `proj_017`.
     # Nullable because a submission created in the app has no external source.
     source_ref: Mapped[Optional[str]] = mapped_column(String(120), nullable=True, index=True)
-    # Commit Integrity (advisory signal, never an automatic disqualification)
+    # Set when this row was detected as a duplicate of another submission (same
+    # repository URL or title after normalisation). It is a *marker*, never a
+    # deletion: the participant's work stays, and the organiser decides.
+    duplicate_of_submission_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("submissions.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     integrity_pct_in_window: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     integrity_flagged: Mapped[bool] = mapped_column(Boolean, default=False)
     integrity_source: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)

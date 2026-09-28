@@ -119,10 +119,38 @@ def test_many_users_may_have_no_github_id(raw, query, graph):
 
 
 def test_two_teams_cannot_share_a_name(expect_violation, graph):
+    """Names are unique as created *here*; both rows below have no source_ref.
+
+    The rule is a partial unique index (`uq_teams_name_app`) rather than a table
+    constraint, because an imported dataset may legitimately repeat a name — the
+    organisers' fixtures.json has "StillTrail" three times.
+    """
     with expect_violation(
         "INSERT INTO teams (name, invite_code) VALUES ('Constraint Team', 'OTHER001')",
         None,
-        "uq_teams_name",
+        "uq_teams_name_app",
+    ):
+        pass
+
+
+def test_an_imported_team_may_repeat_a_name_that_the_app_refuses(
+    raw, query, expect_violation, graph
+):
+    """The exemption is for imported rows, and it is narrow.
+
+    Both halves matter: the import must be able to store a dataset as published,
+    and the application must still refuse a duplicate name a person typed.
+    """
+    raw(
+        "INSERT INTO teams (name, invite_code, source_ref) "
+        "VALUES ('Constraint Team', 'OTHER002', 'tm_999')"
+    )
+    assert query("SELECT count(*) FROM teams WHERE name = 'Constraint Team'")[0][0] == 2
+
+    with expect_violation(
+        "INSERT INTO teams (name, invite_code) VALUES ('Constraint Team', 'OTHER003')",
+        None,
+        "uq_teams_name_app",
     ):
         pass
 
@@ -147,12 +175,57 @@ def test_a_user_cannot_be_on_two_teams(raw, query, expect_violation, graph):
         pass
 
 
-def test_a_team_can_have_only_one_submission(expect_violation, graph):
+def test_a_team_can_have_only_one_live_submission(expect_violation, graph):
+    """A second row for a team is refused unless it is marked as a duplicate."""
     with expect_violation(
         "INSERT INTO submissions (team_id, title, repo_url) "
         "VALUES (:team_id, 'Second', 'https://github.com/c/second')",
         {"team_id": graph["team"].id},
-        "uq_submissions_team",
+        "uq_submissions_team_canonical",
+    ):
+        pass
+
+
+def test_a_duplicate_marked_submission_is_stored_beside_the_one_it_duplicates(
+    raw, query, expect_violation, graph
+):
+    """The case the organisers' dataset contains, which this schema used to refuse.
+
+    prj_41 is a second submission from tm_07 with prj_07's repository URL. Storing
+    both is the point: an organiser compares them and decides, and nothing is
+    deleted on the strength of a string comparison.
+    """
+    raw(
+        "INSERT INTO submissions (team_id, title, repo_url, duplicate_of_submission_id) "
+        "VALUES (:team_id, 'Dry Harbour', 'https://example.org/repo/07', :canonical)",
+        {"team_id": graph["team"].id, "canonical": graph["submission"].id},
+    )
+
+    rows = query(
+        "SELECT id, duplicate_of_submission_id FROM submissions "
+        "WHERE team_id = :team_id ORDER BY id",
+        {"team_id": graph["team"].id},
+    )
+    assert len(rows) == 2
+    assert rows[1][1] == graph["submission"].id
+
+    # The invariant is one *live* submission per team, not one row: the count of
+    # unmarked rows is what the index holds down.
+    live = query(
+        "SELECT count(*) FROM submissions "
+        "WHERE team_id = :team_id AND duplicate_of_submission_id IS NULL",
+        {"team_id": graph["team"].id},
+    )
+    assert live[0][0] == 1
+
+    # A further marked row is storable, because each one is a separate suspicious
+    # pair for an organiser to decide on. What is refused is a second live row —
+    # which is what makes this a narrowed constraint rather than a dropped one.
+    with expect_violation(
+        "INSERT INTO submissions (team_id, title, repo_url) "
+        "VALUES (:team_id, 'Third', 'https://github.com/c/third')",
+        {"team_id": graph["team"].id},
+        "uq_submissions_team_canonical",
     ):
         pass
 
@@ -519,7 +592,7 @@ def test_the_orm_cannot_bypass_a_constraint_either(db, graph, constraint_name):
     with pytest.raises(IntegrityError) as info:
         db.commit()
     db.rollback()
-    assert constraint_name(info.value) == "uq_teams_name"
+    assert constraint_name(info.value) == "uq_teams_name_app"
 
 
 def test_an_audit_entry_written_through_the_orm_is_append_only(db, graph):

@@ -97,6 +97,19 @@ def _dump(db_path: Path) -> dict[str, list[tuple]]:
         connection.close()
 
 
+def _duplicate_rows(db_path: Path) -> int:
+    connection = sqlite3.connect(db_path)
+    try:
+        return int(
+            connection.execute(
+                "SELECT COUNT(*) FROM submissions "
+                "WHERE duplicate_of_submission_id IS NOT NULL"
+            ).fetchone()[0]
+        )
+    finally:
+        connection.close()
+
+
 def test_two_clean_imports_produce_equivalent_databases(tmp_path):
     first_path = tmp_path / "fixture-alias.db"
     second_path = tmp_path / "fixture-explicit.db"
@@ -112,8 +125,12 @@ def test_two_clean_imports_produce_equivalent_databases(tmp_path):
 
     # The counts the acceptance report quotes, derived from the committed file
     # rather than hard-coded twice, so a fixture that silently shrinks fails here.
+    # 41 is the organisers' own published count for fixtures.json.
     payload = fixtures_module.load_fixture()
-    assert len(first["submissions"]) == len(payload["projects"]) == 40
+    assert len(first["submissions"]) == len(payload["projects"]) == 41
+    # The deliberate duplicate is stored as its own row in both databases, not
+    # collapsed into the submission it duplicates.
+    assert _duplicate_rows(first_path) == _duplicate_rows(second_path) == 1
     assert len(first["assignments"]) == sum(
         len(project.get("assigned_judges") or []) for project in payload["projects"]
     )
@@ -145,6 +162,9 @@ def test_a_second_in_process_load_is_equivalent(tmp_path, monkeypatch):
         with Session(engine) as session:
             summary = fixtures_module.apply_fixture(session, payload, mode="apply")
             assert summary["applied"]["projects_created"] == len(payload["projects"])
+            # The deliberate duplicate is stored, not collapsed: prj_41 is a second
+            # submission from tm_07 and must survive the import as its own row.
+            assert summary["applied"]["duplicates_marked"] == 1
         engine.dispose()
         dumps.append(_dump(path))
 

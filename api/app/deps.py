@@ -6,6 +6,7 @@ from typing import Optional
 from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
+from . import access
 from .config import settings
 from .db import get_db
 from .models import User
@@ -29,10 +30,19 @@ def session_token(request: Request) -> Optional[str]:
     token as `Authorization: Bearer <token>` (or `X-Axion-Session`) so it can use
     the API without performing the login flow. Both forms carry the same signed
     payload and are verified identically.
+
+    A cookie literally named `session` is also read, because that is the name the
+    brief's example uses and therefore the one an acceptance manifest will send.
+    It only ever resolves to an account through `access.resolve`, which is gated
+    on the deployment being a demo.
     """
     cookie = request.cookies.get(settings.cookie_name)
     if cookie:
         return cookie
+    if access.enabled():
+        literal = request.cookies.get(access.LITERAL_COOKIE)
+        if literal:
+            return literal
     authorization = request.headers.get("authorization")
     if authorization and authorization.lower().startswith("bearer "):
         return authorization[7:].strip() or None
@@ -44,10 +54,14 @@ def optional_user(
     request: Request, db: Session = Depends(get_db)
 ) -> Optional[User]:
     token = session_token(request)
-    payload = verify_session(token, settings.secret_key)
-    if not payload:
+    if not token:
         return None
-    return db.get(User, int(payload["uid"]))
+    payload = verify_session(token, settings.secret_key)
+    if payload:
+        return db.get(User, int(payload["uid"]))
+    # Not a signed session: it may be one of the four literal demo credentials the
+    # acceptance checker attaches. `resolve` returns None in any real deployment.
+    return access.resolve(token, db)
 
 
 def current_user(

@@ -176,8 +176,10 @@ Indexes: `ix_users_email`, `ix_users_role`.
 
 ### `teams` and `team_members`
 
-A team owns exactly one submission (`uq_submissions_team`), and `team_members.user_id` is unique, so no
-person can be on two teams. `invite_code` is 8 characters from an unambiguous alphabet, generated with
+A team owns exactly one **live** submission (`uq_submissions_team_canonical`), and `team_members.user_id` is
+unique, so no person can be on two teams. `teams.source_ref` carries an imported dataset's own identifier,
+and it is what uniqueness is keyed on: names repeat in real events (the organisers' fixture data has
+"StillTrail" three times), so a name is never an identity. `invite_code` is 8 characters from an unambiguous alphabet, generated with
 `secrets.choice` and re-rolled on collision.
 
 `teams.created_by` is `SET NULL`, so a departing user does not take the team with them. `team_members` rows
@@ -308,7 +310,8 @@ comparison is not a decision software should make.
 
 ### Source identifiers (`source_ref`)
 
-`users.source_ref` and `submissions.source_ref` carry the identifier a row had in the system it was imported
+`teams.source_ref`, `users.source_ref` and `submissions.source_ref` carry the identifier a row had in the
+system it was imported
 from (`proj_017`, `judge_03`). They are nullable, because a row created inside the app has no external
 source, and they are what makes an import idempotent: importing the same file twice updates the same rows
 instead of creating a second event.
@@ -319,10 +322,10 @@ instead of creating a second event.
 | ----- | ---------- | -------- |
 | `users` | `uq_users_email` | one account per email |
 | `users` | `uq_users_github_id` | one account per GitHub identity |
-| `teams` | `uq_teams_name`, `uq_teams_invite_code` | unique team names and join codes |
+| `teams` | `uq_teams_name_app` (partial: `WHERE source_ref IS NULL`), `uq_teams_invite_code` | join codes are unique; team names are unique as created in this application, while an imported dataset is imported as published |
 | `team_members` | `uq_team_members_user` | one team per person |
 | `tracks` | `uq_tracks_name`, `uq_tracks_slug` | addressable, unique tracks |
-| `submissions` | `uq_submissions_team` | one submission per team |
+| `submissions` | `uq_submissions_team_canonical` (partial: `WHERE duplicate_of_submission_id IS NULL`) | one live submission per team; a second row is storable only when marked as a duplicate of the first |
 | `assignments` | `uq_assignment_pair` | no double assignment |
 | `scores` | `uq_score_pair` | one verdict per judge per project |
 | `score_criteria` | `uq_score_criterion_key` | one value per criterion per verdict |
@@ -331,6 +334,7 @@ instead of creating a second event.
 
 | Revision | Adds |
 | -------- | ---- |
+| `0006_imported_reality_is_partial` | `teams.source_ref`, `submissions.duplicate_of_submission_id`; replaces `uq_teams_name` and `uq_submissions_team` with the partial indexes above |
 | `0001_initial` | `users`, `teams`, `team_members`, `submissions`, `assignments`, `scores`, `audit_logs`, and the append-only trigger |
 | `0002_event_and_rubrics` | `tracks`, `prizes`, `rubrics`, `score_criteria`; `submissions.{track_id,status,submitted_at}`, `scores.rubric_id`; backfills `submitted_at` |
 

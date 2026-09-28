@@ -70,6 +70,46 @@ def client():
         yield test_client
 
 
+# The two datasets that ship with this repository. `fixtures.json` at the root is
+# the organisers' published file and is what `docker compose up` seeds;
+# `data/axion-fixtures.json` is Axion's own generated dataset, which every number
+# in README.md and JUDGING.md was computed against.
+ORGANISER_FIXTURE = "fixtures.json"
+AXION_FIXTURE = "data/axion-fixtures.json"
+
+
+@pytest.fixture()
+def organiser_dataset(db):
+    """Import the organisers' published fixtures.json into an empty database.
+
+    Imported through the same loader `docker compose up` uses, so these tests
+    exercise the dialect translation rather than a hand-written stand-in for it.
+    """
+    from app import fixtures as fixtures_module
+
+    payload = fixtures_module.load_fixture(ORGANISER_FIXTURE)
+    summary = fixtures_module.apply_fixture(db, payload, mode="apply")
+    assert summary.get("applied") is not None, summary.get("invalid")
+    db.commit()
+    return summary
+
+
+@pytest.fixture()
+def checker_headers() -> dict[str, dict[str, str]]:
+    """The four literal `Cookie:` headers the committed .dogfood.toml uses.
+
+    Read from `app.access` rather than written out again here: the manifest and
+    the code that accepts the headers must not be able to drift apart, and a test
+    that hard-coded its own copy would not notice if they did.
+    """
+    from app import access
+
+    return {
+        role: {"Cookie": f"{access.LITERAL_COOKIE}={access.LITERAL_TOKENS[role]}"}
+        for role in access.ROLE_ORDER
+    }
+
+
 @pytest.fixture()
 def make_user(db):
     counter = {"n": 0}

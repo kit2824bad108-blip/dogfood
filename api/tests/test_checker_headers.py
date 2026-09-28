@@ -117,10 +117,34 @@ def test_the_alias_selects_the_fixture_window_and_the_same_gate(monkeypatch):
 
     assert settings.dogfood_fixture_mode is True
     assert settings.local_dev_login is True
-    # The fixture's own deadline (2026-08-04) is the one that applies, so the
-    # event is closed on any machine running this suite after it was authored.
-    assert settings.event_end == datetime(2026, 8, 4, tzinfo=timezone.utc)
+    # The fixture's own deadline is the one that applies, so the event is closed
+    # on any machine running this suite: fixtures.json declares
+    # submissions_close 2026-03-01T18:00:00Z.
+    assert settings.event_end == datetime(2026, 3, 1, 18, 0, tzinfo=timezone.utc)
     assert settings.event_window_closed is True
+    # And the name comes from the same file, so the seeded data and the event a
+    # visitor reads about are the same event.
+    assert settings.event_name == "Sample Hack 2026"
+
+
+def test_the_fixture_window_cannot_be_reopened_from_the_environment(monkeypatch):
+    """In fixture mode the dataset's deadline wins over EVENT_END.
+
+    Seeding an event that has already closed and then letting a value from the
+    environment re-open it would make the acceptance result depend on local
+    configuration rather than on the code, so the environment is ignored here and
+    only here: EVENT_SOURCE=env is how a deployment asks for its own window.
+    """
+    monkeypatch.setenv("DOGFOOD_FIXTURE_MODE", "true")
+    monkeypatch.delenv("EVENT_SOURCE", raising=False)
+    monkeypatch.setenv("EVENT_START", "2030-01-01T00:00:00+00:00")
+    monkeypatch.setenv("EVENT_END", "2030-01-08T00:00:00+00:00")
+
+    settings = config.Settings.from_env()
+
+    assert settings.event_end == datetime(2026, 3, 1, 18, 0, tzinfo=timezone.utc)
+    assert settings.event_window_closed is True
+    assert settings.event_name == "Sample Hack 2026"
 
 
 def test_the_alias_does_not_override_an_explicit_event_source(monkeypatch):

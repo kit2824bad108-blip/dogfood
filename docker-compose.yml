@@ -29,6 +29,10 @@ services:
       SECRET_KEY: ${SECRET_KEY:-dev-only-secret-change-me}
       WEB_URL: ${WEB_URL:-http://localhost:3000}
       API_PUBLIC_URL: ${API_PUBLIC_URL:-http://localhost:8000}
+      # Ignored in fixture mode, where the dataset's own name and window are
+      # authoritative: seeding an event that has already closed and then letting a
+      # value from the environment re-open it would make the acceptance result
+      # depend on local configuration rather than on the code.
       EVENT_NAME: ${EVENT_NAME:-Axion Demo Hackathon}
       EVENT_START: ${EVENT_START:-}
       EVENT_END: ${EVENT_END:-}
@@ -36,20 +40,22 @@ services:
       GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       MOCK_GITHUB: ${MOCK_GITHUB:-true}
-      SEED_DEMO: ${SEED_DEMO:-true}
-      # demo (the app's default: the crafted dataset every published number was
-      # computed against) or fixtures (fixtures.json: messy, already closed).
-      # Deliberately blank when unset: a hard default here would be *set* in the
-      # container and would shadow DOGFOOD_FIXTURE_MODE, whose whole job is to
-      # select the fixture dataset in one flag.
-      SEED_MODE: ${SEED_MODE:-}
-      # env (the app's default) or fixtures, which takes the event window from
-      # fixtures.json so an imported closed deadline is genuinely enforced.
-      # Blank for the same reason as SEED_MODE: the alias must be able to decide.
-      EVENT_SOURCE: ${EVENT_SOURCE:-}
-      # One-flag alias for `SEED_MODE=fixtures EVENT_SOURCE=fixtures`: runs the
-      # acceptance dataset and enforces its closed window. The explicit values
-      # above still win.
+      # The one-command path runs the *acceptance* dataset, not the showcase one:
+      # `fixtures.json` at the root is the organisers' published file, loaded as
+      # published, and its submissions_close is already in the past. That is the
+      # posture the acceptance report is produced from, so it is the default.
+      #
+      #   SEED_MODE=demo   the crafted dataset every number in README.md and
+      #                    JUDGING.md was computed against, with an open window
+      #                    and the deliberate raw-average-vs-Z-score flip.
+      SEED_MODE: ${SEED_MODE:-fixtures}
+      # env or fixtures. In fixtures the event name and window come from the
+      # dataset, so the seeded data and the announced event describe the same
+      # thing and the imported deadline is genuinely enforced.
+      EVENT_SOURCE: ${EVENT_SOURCE:-fixtures}
+      SEED_DEMO: ${SEED_DEMO:-false}
+      # One-flag alias for `SEED_MODE=fixtures EVENT_SOURCE=fixtures`. Still
+      # honoured; no longer required, because that is now the default.
       DOGFOOD_FIXTURE_MODE: ${DOGFOOD_FIXTURE_MODE:-false}
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
       # The fixture dataset sits at the repository root, which is not part of the

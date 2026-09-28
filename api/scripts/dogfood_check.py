@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Manifest-driven acceptance check for Axion.
 
-    python api/scripts/dogfood_check.py .dogfood.toml --out acceptance-report.txt
+    python api/scripts/dogfood_check.py api/scripts/selfcheck.toml \\
+        --out acceptance-report.selfcheck.txt
 
 Every route, role, status expectation, dataset size and even the search probe
 comes from the manifest — this script contains no route list of its own — so the
@@ -9,10 +10,18 @@ check and the contract cannot drift apart. The manifest is read with the standar
 library (`tomllib`), and credentials are fetched from the endpoint the manifest
 names, never embedded.
 
-**This is Axion's own check.** No organiser-provided `.dogfood.toml`, `run.py` or
-`fixtures.json` was present in this repository or on the machine Axion was built
-on. The report this produces says so on its face, rather than letting the
-artefact imply a run that never happened.
+**This is Axion's own check, and it is not the organisers' one.** Two separate
+artefacts, on purpose:
+
+    acceptance-report.txt           their run.py, reading the root .dogfood.toml
+                                    (seven checks, the same program every team runs)
+    acceptance-report.selfcheck.txt this script, reading api/scripts/selfcheck.toml
+                                    (nineteen checks, including the ones that
+                                    cannot be asked of a project by a third party)
+
+Both were run against the same instance. A claim verified only by its author is
+not evidence, so the two are never merged, and neither file is written by the
+other's tool.
 
 Nothing here mutates the instance except the closed-event submission probe, and
 even that is skipped (not attempted) when the event is open.
@@ -501,10 +510,11 @@ def render(checker: Checker) -> str:
         "",
         manifest.get("checker", {}).get("disclosure", ""),
         "",
-        "No organiser-provided `.dogfood.toml`, `run.py` or `fixtures.json` was present in",
-        "this repository or on the machine Axion was built on, so this is not a run of an",
-        "organiser's acceptance suite. Every line below is an observation of a running",
-        "instance, made through the routes the manifest declares.",
+        "This is not the organisers' acceptance report, and it does not replace it.",
+        "That is `acceptance-report.txt`, produced by the organisers' own run.py reading",
+        "the root `.dogfood.toml` (seven checks, the same program for every team). What",
+        "follows is Axion's own deeper check, against the same running instance, and every",
+        "line is an observation of that instance rather than a claim about it.",
         "",
         f"Generated     : {datetime.now(timezone.utc).isoformat()}",
         f"Target        : {checker.base_url or service.get('base_url')}",
@@ -569,8 +579,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument(
         "manifest",
         nargs="?",
-        default=".dogfood.toml",
-        help="path to the manifest (default: .dogfood.toml, relative to the repository root)",
+        default="api/scripts/selfcheck.toml",
+        help=(
+            "path to the manifest (default: api/scripts/selfcheck.toml, relative to the "
+            "repository root). The organisers' manifest is .dogfood.toml and is read by "
+            "their run.py, not by this checker."
+        ),
     )
     parser.add_argument(
         "--out",

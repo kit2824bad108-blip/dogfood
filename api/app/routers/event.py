@@ -96,12 +96,22 @@ def gallery(
     track: str | None = Query(default=None, max_length=120),
     db: Session = Depends(get_db),
 ) -> dict:
-    """Searchable public gallery of submitted projects."""
+    """Searchable public gallery of submitted projects.
+
+    One row per project. A submission marked as a duplicate of another is left out
+    of the public listing and stays visible in the organiser's duplicate review,
+    because showing a stranger the same project twice is not a feature. The
+    dataset that contains such a row is imported in full either way — the import
+    never drops a participant's work; it only says where it should be shown.
+    """
     statement = (
         select(Submission, Team, Track)
         .join(Team, Team.id == Submission.team_id)
         .outerjoin(Track, Track.id == Submission.track_id)
-        .where(Submission.status == "submitted")
+        .where(
+            Submission.status == "submitted",
+            Submission.duplicate_of_submission_id.is_(None),
+        )
         .order_by(Submission.id)
         .limit(GALLERY_LIMIT)
     )

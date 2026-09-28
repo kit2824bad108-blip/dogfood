@@ -1,0 +1,35 @@
+# The organisers' published example configuration, copied verbatim from
+# https://dogfoodhack.com/spec section 03 (".dogfood.toml"), and from the
+# same block in Appendix B of https://dogfoodhack.com/spec/context.txt.
+#
+# It is vendored here as a reference, not because anything reads it: the
+# manifest this repository is actually checked with is /.dogfood.toml, which
+# has the same shape and this project's own values in it.
+#
+# The one thing it settles beyond doubt is what the four files are free to
+# decide and what they are not. Routes, login format and storage shape are
+# ours ("No fixed API routes. Yours are yours."). The four section names, the
+# four auth roles, the five route keys and the `claimed`/`pitch` pair are not.
+
+[portal]
+base_url = "http://localhost:8080"
+
+[tiers]
+claimed = ["T1", "T2"]
+pitch = "One sentence on what you built."
+
+[auth]
+# Whatever header proves you are this role. A cookie, a
+# bearer token, a basic auth string. Your seed script
+# prints these when the portal boots.
+organizer   = "Cookie: session=org_7f2a"
+judge_a     = "Cookie: session=jdg_a_91bc"
+judge_b     = "Cookie: session=jdg_b_44de"
+participant = "Cookie: session=prt_2e88"
+
+[routes]
+gallery      = "/projects"
+submit       = "/projects/new"
+judge_scores = "/api/judge/scores"
+peer_scores  = "/api/judge/scores?judge=judge_a"
+csv_export   = "/api/export.csv"

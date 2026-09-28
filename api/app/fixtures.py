@@ -36,6 +36,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .audit import record
+from .fixture_dialects import detect_dialect as _detect_dialect, normalize as _normalize
 from .models import (
     Assignment,
     ImportBatch,
@@ -75,7 +76,11 @@ RUBRIC_FALLBACK_MIN_COVERAGE = 3
 
 
 def load_fixture(path: Path | str | None = None) -> dict[str, Any]:
-    """Read a fixture file. Raises ValueError if it is not a usable dataset."""
+    """Read a fixture file. Raises ValueError if it is not a usable dataset.
+
+    Returns the *canonical* shape whatever dialect the file was written in, so
+    every caller downstream sees one spelling. See `fixture_dialects`.
+    """
     resolved = Path(path) if path else default_fixture_path()
     if not resolved.is_absolute():
         # A relative path is read beside the configured fixture file, so
@@ -91,7 +96,12 @@ def load_fixture(path: Path | str | None = None) -> dict[str, Any]:
         raise ValueError(f"{resolved.name} must contain a JSON object")
     if not payload.get("projects"):
         raise ValueError(f"{resolved.name} contains no projects")
-    return payload
+    return _normalize(payload)
+
+
+def dialect_of(payload: dict[str, Any]) -> str:
+    """'dogfood' for the organisers' file, 'axion' for Axion's own."""
+    return _detect_dialect(payload)
 
 
 def parse_utc(value: Any) -> Optional[datetime]:
@@ -142,6 +152,7 @@ def title_fingerprint(value: Any) -> str:
 
 def validate(fixture: dict[str, Any]) -> list[dict[str, Any]]:
     """Structural problems that would make an import unsafe. Empty is healthy."""
+    fixture = _normalize(fixture)
     problems: list[dict[str, Any]] = []
 
     def problem(kind: str, ref: str, detail: str) -> None:
@@ -285,6 +296,7 @@ def diagnose(fixture: dict[str, Any]) -> dict[str, Any]:
     Pure: no database, no side effects, so the diagnostics screen and the import
     report can never disagree about the same file.
     """
+    fixture = _normalize(fixture)
     projects = list(fixture.get("projects") or [])
     judges = list(fixture.get("judges") or [])
     reviews = list(fixture.get("reviews") or [])
@@ -438,6 +450,7 @@ def apply_fixture(
     touching anything else — the default for the admin endpoint, because an
     import that silently rewrites an event is not a feature.
     """
+    fixture = _normalize(fixture)
     diagnostics = diagnose(fixture)
     source_name = source or fixture.get("generator") or FIXTURE_SOURCE
 
@@ -524,16 +537,23 @@ def apply_fixture(
 
     team_rows: dict[str, Team] = {}
     for index, team in enumerate(fixture.get("teams") or []):
-        team_row = db.scalar(select(Team).where(Team.name == team.get("name")))
+        ref = str(team.get("source_ref") or team.get("id"))
+        # Keyed on the dataset's own identifier, never on the name. Keying on the
+        # name merged distinct teams whenever an event contained a repeated one,
+        # which is exactly what the organisers' fixture data does on purpose:
+        # "StillTrail" appears three times, "OpenSignal" twice.
+        team_row = db.scalar(select(Team).where(Team.source_ref == ref))
         if team_row is None:
             # crc32, not hash(): hash() is randomised per process, and an invite
             # code that changes on every import is not a code at all.
-            code_seed = zlib.crc32(str(team.get("id")).encode()) % 997
+            code_seed = zlib.crc32(ref.encode()) % 997
             team_row = Team(
                 name=team.get("name"),
                 invite_code=f"FIX{index + 1:02d}{code_seed:03d}",
+                source_ref=ref,
             )
             db.add(team_row)
+        team_row.name = team.get("name") or team_row.name
         db.flush()
         team_rows[str(team.get("id"))] = team_row
 
@@ -566,19 +586,37 @@ def apply_fixture(
     db.flush()
 
     # ── projects ────────────────────────────────────────────────────────────
+    # Two passes, because a duplicate submission may only be stored once its
+    # canonical row exists: `uq_submissions_team_canonical` permits a second row
+    # for a team only when it already points at the first. The markers come from
+    # the same deterministic detector the organiser's duplicates screen uses, so
+    # what is marked here and what is listed for review cannot disagree.
+    projects = list(fixture.get("projects") or [])
+    duplicate_of = {
+        str(candidate["submission"]): str(candidate["duplicate_of"])
+        for candidate in duplicate_candidates(projects)
+    }
     created_projects = 0
     updated_projects = 0
     submission_rows: dict[str, Submission] = {}
-    for project in fixture.get("projects") or []:
+
+    def write_project(project: dict[str, Any], canonical_ref: str | None) -> None:
+        """Create or update one submission. Returns nothing; fills the map."""
+        nonlocal created_projects, updated_projects
         ref = str(project.get("id"))
-        team_id = team_rows.get(str(project.get("team_id")))
-        if team_id is None:
-            continue
+        team_row = team_rows.get(str(project.get("team_id")))
+        if team_row is None:
+            return
+        # Keyed on the dataset's own identifier only. Falling back to the team
+        # silently rewrote one submission with the next one whenever a team had
+        # two, which is how a deliberate duplicate disappeared on import.
         submission = db.scalar(select(Submission).where(Submission.source_ref == ref))
         if submission is None:
-            submission = db.scalar(select(Submission).where(Submission.team_id == team_id.id))
-        if submission is None:
-            submission = Submission(team_id=team_id.id, title=project.get("title"))
+            submission = Submission(
+                team_id=team_row.id,
+                title=project.get("title"),
+                repo_url=project.get("repo_url") or "",
+            )
             db.add(submission)
             created_projects += 1
         else:
@@ -596,6 +634,9 @@ def apply_fixture(
         submission.status = project.get("status") or "submitted"
         submission.submitted_at = parse_utc(project.get("submitted_at"))
         submission.source_ref = ref
+        if canonical_ref is not None:
+            canonical = submission_rows.get(canonical_ref)
+            submission.duplicate_of_submission_id = canonical.id if canonical else None
         submission.integrity_pct_in_window = integrity.get("pct_in_window")
         submission.integrity_flagged = bool(integrity.get("flagged"))
         submission.integrity_source = "fixture"
@@ -609,9 +650,23 @@ def apply_fixture(
         db.flush()
         submission_rows[ref] = submission
 
+    for project in projects:
+        if str(project.get("id")) not in duplicate_of:
+            write_project(project, None)
+    for project in projects:
+        canonical_ref = duplicate_of.get(str(project.get("id")))
+        if canonical_ref is not None:
+            write_project(project, canonical_ref)
+
+    duplicates_marked = sum(
+        1
+        for submission in submission_rows.values()
+        if submission.duplicate_of_submission_id is not None
+    )
+
     # ── assignments and verdicts ────────────────────────────────────────────
     created_assignments = 0
-    for project in fixture.get("projects") or []:
+    for project in projects:
         submission = submission_rows.get(str(project.get("id")))
         if submission is None:
             continue
@@ -665,6 +720,12 @@ def apply_fixture(
                     select(ScoreCriterion).where(ScoreCriterion.score_id == score.id)
                 ).all()
             }
+            # A review may carry per-criterion values of its own (the organisers'
+            # fixture does). Where it does, those are the judge's actual answers
+            # and are stored as given; where it does not, the derived verdict is
+            # mirrored, exactly as the demo seed does, so the Z-score contract is
+            # unchanged by importing Axion's own dataset.
+            review_criteria = review.get("criteria") or {}
             for entry in criteria:
                 row = existing_criteria.pop(entry.get("key"), None)
                 if row is None:
@@ -672,9 +733,7 @@ def apply_fixture(
                     db.add(row)
                 row.label = entry.get("label")
                 row.weight = float(entry.get("weight") or 0.0)
-                # Mirrors the derived technical verdict, exactly as the demo seed
-                # does, so the Z-score contract is unchanged by importing.
-                row.value = score.technical_score
+                row.value = int(review_criteria.get(entry.get("key"), score.technical_score))
             for orphan in existing_criteria.values():
                 db.delete(orphan)
     db.flush()
@@ -690,6 +749,7 @@ def apply_fixture(
             "participants": len(participant_rows),
             "assignments_created": created_assignments,
             "scores_created": created_scores,
+            "duplicates_marked": duplicates_marked,
         },
         "refused": None,
     }

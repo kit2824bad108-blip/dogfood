@@ -1,0 +1,279 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Axion's own deeper self-check.
+#
+# This is NOT the DOGFOOD acceptance manifest. The organisers' manifest is at the
+# repository root (`.dogfood.toml`, read by their `run.py`, seven checks) and that
+# file is the one their suite reads. This one asks nineteen questions instead of
+# seven — the blind gate, the exports, the Z-score leaderboard, anonymous
+# boundaries — because a project should be able to check more than it is graded on.
+#
+# Do not merge the two. A claim verified only by its author is not evidence, and
+# folding nineteen of our own assertions into the artefact the organisers read
+# would blur exactly that line.
+#
+#   python api/scripts/dogfood_check.py api/scripts/selfcheck.toml \
+#       --out acceptance-report.selfcheck.txt
+#
+# Both files are plain TOML and contain no secrets. This checker fetches its
+# credentials from `auth.token_source`, a development-only endpoint that serves
+# signed bearer tokens, so nothing here has to be edited per machine.
+#
+# The dataset below is the one `docker compose up` seeds: the organisers'
+# fixtures.json, loaded as published — 41 projects including the deliberate
+# duplicate submission, 30 judges, 40 teams, 8 tracks, and an event whose
+# submissions_close is already in the past.
+# ─────────────────────────────────────────────────────────────────────────────
+
+[checker]
+name = "axion-self-check"
+manifest_version = 1
+disclosure = "Axion's own deeper self-check. The organisers' acceptance report is acceptance-report.txt, produced by their run.py reading .dogfood.toml."
+
+[service]
+base_url = "http://127.0.0.1:8000"
+health = "/api/health"
+docs = "/api/docs"
+openapi = "/api/openapi.json"
+
+# The checker attaches headers. It never performs the login flow, and it never
+# embeds a token: it reads them from `token_source` at run time. That endpoint is
+# disabled unless the deployment is explicitly a demo.
+[auth]
+mode = "headers"
+token_source = "/api/dev/checker-headers"
+session_header = "Authorization"
+bearer_prefix = "Bearer "
+
+[auth.roles]
+organizer = "organizer"
+judge_a = "judge_a"
+judge_b = "judge_b"
+participant = "participant"
+
+[dataset]
+fixtures = "fixtures.json"
+seed_mode = "fixtures"
+expected_submissions = 41
+expected_judges = 30
+expect_closed_event = true
+
+[expectations]
+min_openapi_paths = 30
+gallery_withholds = ["demo_url", "video_url"]
+# Every "Dry …" project in the fixture data: Dry Compass, Dry Harbour, Dry Bridge,
+# Dry Relay. The duplicate Dry Harbour is excluded from the public gallery, so the
+# term matches four rows rather than five.
+search_term = "dry"
+search_expected_min = 3
+closed_event_status_class = "4xx"
+
+# ── T0 — the runtime answers at all ──────────────────────────────────────────
+
+[[checks]]
+id = "health"
+group = "T0"
+name = "Health endpoint answers"
+method = "GET"
+path = "/api/health"
+role = "public"
+expect = 200
+
+[[checks]]
+id = "openapi"
+group = "T0"
+name = "OpenAPI schema is served"
+method = "GET"
+path = "/api/openapi.json"
+role = "public"
+expect = 200
+
+[[checks]]
+id = "docs"
+group = "T0"
+name = "Interactive API docs are served"
+method = "GET"
+path = "/api/docs"
+role = "public"
+expect = 200
+
+# ── T1 — the public surface ──────────────────────────────────────────────────
+
+[[checks]]
+id = "event"
+group = "T1"
+name = "Public event configuration"
+method = "GET"
+path = "/api/event"
+role = "public"
+expect = 200
+
+[[checks]]
+id = "gallery"
+group = "T1"
+name = "Public gallery lists projects"
+method = "GET"
+path = "/api/gallery"
+role = "public"
+expect = 200
+
+[[checks]]
+id = "gallery_search"
+group = "T1"
+name = "Gallery search returns matches"
+method = "GET"
+path = "/api/gallery?q={search_term}"
+role = "public"
+expect = 200
+
+[[checks]]
+id = "dataset"
+group = "DATASET"
+name = "Instance is running the declared dataset"
+method = "GET"
+path = "/api/event"
+role = "public"
+expect = 200
+
+# The only write this check ever attempts. It is skipped rather than attempted
+# when the event is open, so a demo instance is never mutated by a read-only run.
+[[checks]]
+id = "submit_closed"
+group = "T1"
+name = "Closed event rejects submissions"
+method = "POST"
+path = "/api/submissions"
+role = "participant"
+expect_class = "4xx"
+body = { title = "Checker probe", repo_url = "https://github.com/axion-fixtures/checker-probe", status = "submitted" }
+
+# ── T2 — judging ─────────────────────────────────────────────────────────────
+
+[[checks]]
+id = "judge_assignments"
+group = "T2"
+name = "Judge sees their assignments"
+method = "GET"
+path = "/api/judging/assignments"
+role = "judge_a"
+expect = 200
+
+[[checks]]
+id = "judge_technical"
+group = "T2"
+name = "Technical view withholds presentation links"
+method = "GET"
+path = "/api/judging/submissions/{submission_id}"
+role = "judge_a"
+expect = 200
+
+[[checks]]
+id = "judge_peer_scores"
+group = "T2"
+name = "A judge cannot read a peer's scores"
+method = "GET"
+path = "/api/judging/judges/jdg_01/scores"
+role = "judge_b"
+expect = 403
+
+[[checks]]
+id = "judge_own_scores"
+group = "T2"
+name = "A judge can read their own scores"
+method = "GET"
+path = "/api/judging/scores"
+role = "judge_a"
+expect = 200
+
+[[checks]]
+id = "presentation_gate"
+group = "T2"
+name = "Presentation stays locked until the technical verdict exists"
+method = "GET"
+path = "/api/judging/submissions/{submission_id}/presentation"
+role = "judge_b"
+expect = 403
+
+[[checks]]
+id = "leaderboard"
+group = "T2"
+name = "Z-score leaderboard ranks every project"
+method = "GET"
+path = "/api/admin/leaderboard"
+role = "organizer"
+expect = 200
+
+# ── Exports: the artefact an organiser actually needs ────────────────────────
+
+[[checks]]
+id = "export_leaderboard"
+group = "T2"
+name = "Leaderboard CSV export"
+method = "GET"
+path = "/api/admin/export/leaderboard.csv"
+role = "organizer"
+expect = 200
+expect_content_type = "text/csv"
+
+[[checks]]
+id = "export_scores"
+group = "T2"
+name = "Scores CSV export"
+method = "GET"
+path = "/api/admin/export/scores.csv"
+role = "organizer"
+expect = 200
+expect_content_type = "text/csv"
+
+[[checks]]
+id = "export_progress"
+group = "T2"
+name = "Judging progress CSV export"
+method = "GET"
+path = "/api/admin/export/judging-progress.csv"
+role = "organizer"
+expect = 200
+expect_content_type = "text/csv"
+
+# ── AUTH — boundaries, checked from both sides ───────────────────────────────
+
+[[checks]]
+id = "session_identity"
+group = "AUTH"
+name = "Organizer header authenticates as an admin"
+method = "GET"
+path = "/api/auth/me"
+role = "organizer"
+expect = 200
+
+[[checks]]
+id = "participant_surface"
+group = "AUTH"
+name = "Participant reaches their own submission surface"
+method = "GET"
+path = "/api/submissions/me"
+role = "participant"
+expect = 200
+
+[[checks]]
+id = "participant_forbidden"
+group = "AUTH"
+name = "Participant cannot read the organizer leaderboard"
+method = "GET"
+path = "/api/admin/leaderboard"
+role = "participant"
+expect = 403
+
+[[checks]]
+id = "anonymous_forbidden"
+group = "AUTH"
+name = "Anonymous request cannot read the organizer leaderboard"
+method = "GET"
+path = "/api/admin/leaderboard"
+role = "public"
+expect = 401
+
+[[claims]]
+tiers = ["T1", "T2"]
+not_claimed = ["T3", "T4"]
+bonuses = ["normalization-proof", "api-first", "threat-model"]
+note = "T3 and T4 are not claimed and are documented as such in README.md."
