@@ -42,7 +42,7 @@ view over the API. One schema, one migration history, one place where invariants
 
 ## Schema
 
-Eleven tables, no ORM relationships (explicit joins, so there is no lazy-loading surprise). The full column
+Eighteen tables, no ORM relationships (explicit joins, so there is no lazy-loading surprise). The full column
 list, ERD and constraint rationale live in [DATA-MODEL.md](./DATA-MODEL.md).
 
 | Table | Purpose | Notable constraints |
@@ -58,6 +58,13 @@ list, ERD and constraint rationale live in [DATA-MODEL.md](./DATA-MODEL.md).
 | `scores` | A judge's staged verdict on one submission | unique `(judge_id, submission_id)`, `rubric_id` for provenance |
 | `score_criteria` | Per-criterion values behind a verdict | unique `(score_id, key)` |
 | `audit_logs` | Append-only event trail | `action` and `created_at` indexed |
+| `voters` | A community voter: an address and a **SHA-256 digest** of its ballot token | unique `email`, unique `token_hash` |
+| `votes` | One immutable ballot, strikable but never editable | **unique `(voter_id, submission_id)`**, `score` 1–5, `status` ∈ {cast, struck} |
+| `comments` | A project comment, hidden rather than deleted | `status` ∈ {visible, hidden}, `created_at` indexed |
+| `throttle_events` | Rate-limit attempts, in the database so they hold across workers | index on `(bucket, key, at_epoch)` |
+| `webhook_endpoints` | A registered receiver and its signing secret | `active` indexed; `events` empty means everything |
+| `webhook_deliveries` | The signed outbox: one row per event per endpoint | `status` ∈ {pending, delivered, failed, dead} |
+| `participation_records` | A signed attestation, stored **as signed** | unique `code`; revocation is a column, never an edit |
 
 ### The staged score row
 
@@ -155,7 +162,12 @@ existing verdict (`score.technical_modified`, with previous and new values) — 
 | Judging | `GET /api/judging/assignments`, `GET /api/judging/submissions/{id}`, `GET /api/judging/submissions/{id}/presentation`, `POST /api/judging/scores` *(accepts per-criterion values)* |
 | Admin | `GET /api/admin/{overview,leaderboard,flagged,audit,judging-progress,tracks,rubric}`, `POST /api/admin/{judges,tracks,prizes,rubric,assignments/backfill}`, `POST /api/admin/archive[/markdown]` |
 | Export | `GET /api/admin/export/{leaderboard,scores,judging-progress}.csv` — every export writes an `export.csv` audit entry |
-| Meta | `GET /api/health`, `GET /api/docs`, `GET /api/openapi.json`, `GET /api/redoc` |
+| Community (T3) | `POST /api/vote/register`, `GET|POST /api/vote/verify`, `GET /api/vote/ballot`, `POST /api/vote[/ballot]`, `GET /api/vote/results`, `GET|POST /api/submissions/{id}/comments`, `DELETE /api/comments/{id}`, and the organiser tools under `/api/admin/{community,votes/{id}/strike,comments/{id}/moderate,voters/{id}/block}` |
+| Webhooks (T4) | `GET|POST /api/admin/webhooks`, `PATCH|DELETE /api/admin/webhooks/{id}`, `POST /api/admin/webhooks/{id}/test`, `POST /api/admin/webhooks/dispatch`, `GET /api/admin/webhooks/deliveries[/{id}]`, `POST …/deliveries/{id}/redeliver` |
+| Records (T4) | `POST /api/admin/records/issue`, `GET /api/admin/records`, `POST /api/admin/records/{code}/revoke`, and the public `GET /api/records[/{code}][/certificate]` |
+| Bundle (T4) | `GET /api/admin/bundle/export`, `POST /api/admin/bundle/{validate,import}` — the import is a **dry run** unless asked otherwise |
+| Embed (T4) | `GET /api/embed/gallery`, `GET /api/embed/gallery/snippet` — public, read-only, self-contained |
+| Meta | `GET /api/health[/live,/ready]`, `GET /api/docs`, `GET /api/openapi.json`, `GET /api/redoc` |
 
 Responses are plain dicts assembled in the routers; only request payloads are validated with Pydantic.
 Responses are read-only projections with no lazy loading, and the extra layer buys nothing here.
@@ -189,6 +201,54 @@ integrity, and per-verdict z-scores with the judge statistics used to produce th
 
 Archiving mutates nothing. Downloading it is safe mid-event, and the database stays up until an operator
 chooses to spin it down.
+
+## The community surface (T3)
+
+`app/voting.py` owns the rules and `app/routers/community.py` owns the doors, for the same reason `zscore.py`
+is separate from the judging router: the rules are asked about from several places and must not be able to
+differ between them.
+
+- **A voter is not a user.** Voting is email-gated, so `Voter` holds an address and a token digest, and the
+  ballot cookie is the proof. This is why the community router authenticates differently from the rest of the
+  API, and why it is its own module rather than four endpoints bolted onto judging.
+- **Ballot order is a pure function of (voter, project).** `voting.ballot_order` sorts by
+  `hmac-sha256(secret, token_digest + ':' + submission_id)`. Stable across reloads, different per voter, and
+  reproducible by an organiser — three properties that a `random.shuffle()` per request cannot have, and the
+  ballot payload names the method so the property is checkable from outside.
+- **The window is its own clock.** `settings.voting_start` / `voting_end` are derived from the event window
+  with a tail (default: three days past the submission deadline), so an event can stop taking work and keep
+  taking votes; `voting_window()` is the single place that decides the phase, and every public endpoint asks
+  it rather than reading a flag.
+- **The tally is cast-votes-only.** `voting.aggregate` never mixes struck votes into the headline figures;
+  `include_struck=True` *adds* a separate `struck_votes` number instead of changing the average, because a
+  figure that changes depending on which request produced it is not a tally.
+- **Rate limits live in the database.** `throttle_events` plus `app/throttle.py` counts attempts per bucket so
+  the limiter keeps applying when a deployment runs more than one worker. An in-process counter would
+  silently stop working at exactly the moment it starts to matter.
+
+## Outbound and reproducible (T4)
+
+Three engines, each with one job.
+
+- **`app/webhooks.py` — the outbox.** `emit()` inserts one delivery row per subscribed endpoint *inside the
+  caller's transaction*, so a receiver that is down cannot fail a participant's write. The envelope is built
+  once and stored, which is what makes a retry byte-identical and lets a receiver dedupe on
+  `X-Axion-Delivery`; `sign()` and `verify_signature()` are the two halves of one algorithm, kept together
+  so the documentation cannot drift from the code. `dispatch()` is the only thing that sends anything — there
+  is no worker, by design — and it takes an injectable sender so the retry policy is testable without a
+  socket.
+- **`app/records.py` — signed records and certificates.** The signature is over `record.payload` **as
+  stored**, not over a payload reassembled from columns: rebuilding it would make verification depend on how
+  SQLite and Postgres each round-trip a datetime, which is a defect that only appears when a stranger checks
+  a certificate on another machine. `key_publication()` decides from the clock whether the symmetric key may
+  be published, and says why either way.
+- **`app/bundle.py` — the whole event, in and out.** Export is ordered by primary key throughout so two
+  exports of an unchanged event are byte-identical and the checksum is worth publishing. Import matches every
+  row on the key it is *identified* by, so it is idempotent, and it refuses a bundle whole rather than
+  applying half of one.
+
+`app/routers/embed.py` is deliberately tiny and read-only: a sponsor's page embeds a gallery, and an embed
+that could write anything would be a second front door into an event.
 
 ## Frontend
 
@@ -249,14 +309,19 @@ implies, that `peer_scores` names judge A and *not* judge B, and that the number
 `fixtures.json` holds. A rename in one place and not the other fails in CI.
 
 `api/scripts/selfcheck.toml` is **Axion's own** manifest, read by `api/scripts/dogfood_check.py` with the
-standard library: twenty-one checks rather than their seven, including the blind gate, all three CSV exports,
-the Z-score leaderboard and both sides of four role boundaries. It fetches signed bearer tokens from
+standard library: thirty-seven checks rather than their seven, including the blind gate, all three CSV
+exports, the Z-score leaderboard, both sides of four role boundaries, the community ballot and its hidden
+tally, the webhook outbox, signed records, the bundle and the embed. It fetches signed bearer tokens from
 `GET /api/dev/checker-headers` so it stays valid on any machine, and the one write it attempts is *skipped*
-rather than sent when the event is open, so a read-only run cannot mutate what it measures.
+rather than sent when the event is open, so a read-only run cannot mutate what it measures. It also prints
+**claimed versus observed** for each tier and applies the same ladder rule their `run.py` does — a tier counts
+only if every check of its own passed *and* every tier below it did — so a claim in the report can never be
+more generous than the evidence under it.
 
-They are separate files and separate reports on purpose. Twenty-one assertions of ours folded into the artefact
+They are separate files and separate reports on purpose. Thirty-seven assertions of ours folded into the artefact
 the organisers read would blur the only line that matters in an acceptance report: who ran it.
-`api/scripts/acceptance.py` remains the third, tier-by-tier tool (T0–T4 plus bonus claims).
+`api/scripts/acceptance.py` remains the third, tier-by-tier tool (T0–T4 plus bonus claims), run against the
+**demo** dataset because half of it asks what only an open event can answer.
 
 ## Testing strategy
 
@@ -280,7 +345,14 @@ The event window in `tests/conftest.py` is computed relative to *now*: a hard-co
 start exercising the closed-window path instead of the open one.
 
 `api/scripts/acceptance.py` is the live counterpart — it drives a running instance over HTTP tier by tier
-and writes `acceptance-report.txt` at the repository root.
+and writes `acceptance-report.axion.txt` at the repository root. (`acceptance-report.txt` is a different
+artefact: the organisers' own `run.py` reading `.dogfood.toml`, which nothing in this repository writes.)
+
+Two suites exist because they answer different questions. `dogfood_check.py` is a manifest walk: every
+assertion is declared in TOML and the script contains no route list of its own, so the check and the contract
+cannot drift. `acceptance.py` is a *narrative* walk: it registers a real participant, files a real verdict,
+casts a real vote, posts a real comment, issues and revokes a real record, and dispatches a real outbound
+delivery to this deployment's own route — because those are paths only observable end to end.
 
 SQLite is used only for speed; the models avoid Postgres-specific column types so the same code paths run
 against both. The append-only trigger is exercised by the migration, which only runs on Postgres.

@@ -581,13 +581,262 @@ def run_checks(suite: Suite) -> None:
             f"{len(markdown)} chars of RESULTS.md"
         )
 
-    # ── T4 ──────────────────────────────────────────────────────────────────
+    # ── T3: the community surface ────────────────────────────────────────────
 
-    @suite.check("T4", "PDF certificates")
+    voter_state: dict[str, object] = {}
+
+    @suite.check("T3", "Community ballot: email gate, per-voter order, immutable votes")
     def _() -> tuple[str, str]:
-        return SKIP, (
-            "not implemented, and deliberately last in priority: the rules prefer a clean T2 to a "
-            "broken T4. The archive bundle carries every field a certificate would need."
+        email = f"{unique('accept-voter', suite)}@axion.test"
+        registered = suite.post("/api/vote/register", json={"email": email, "name": "Acceptance"})
+        assert registered.status_code == 201, registered.text[:200]
+        body = registered.json()
+        token = body["token"]
+        assert body["voter"]["verified"] is False, "asking for a link must not verify the address"
+        assert body["delivery"]["mailer_configured"] is False, (
+            "the deployment claims a mailer it does not have"
+        )
+        voter_state["token"] = token
+
+        # The token is known; the address is not proven. That is the whole gate.
+        unproven = client.get("/api/vote/ballot", headers={"X-Axion-Voter": token})
+        assert unproven.status_code == 403, f"unverified ballot -> {unproven.status_code}"
+
+        verified = suite.post("/api/vote/verify", json={"token": token})
+        assert verified.status_code == 200, verified.text[:200]
+
+        ballot = suite.json("/api/vote/ballot")
+        entries = ballot["ballot"]
+        assert entries, "the ballot is empty on a dataset with submissions"
+        again = suite.json("/api/vote/ballot")
+        assert [row["submission_id"] for row in entries] == [
+            row["submission_id"] for row in again["ballot"]
+        ], "the ballot reshuffled between two reads, so it is unusable"
+        assert ballot["ordering"]["method"].startswith("hmac-sha256"), (
+            "the ballot order is not reproducible, so a complaint cannot be investigated"
+        )
+
+        target = entries[0]["submission_id"]
+        first = suite.post("/api/vote", json={"submission_id": target, "score": 5})
+        assert first.status_code == 201, first.text[:200]
+        second = suite.post("/api/vote", json={"submission_id": target, "score": 1})
+        assert second.status_code == 409, (
+            f"a second vote on the same project -> {second.status_code}: a vote must be final"
+        )
+        return PASS, (
+            f"address gated (403 before the link, 200 after); {len(entries)} projects in a stable "
+            f"per-voter order; first vote recorded and the second refused with 409"
+        )
+
+    @suite.check("T3", "The tally is never partial: published at the close, refused before it")
+    def _() -> tuple[str, str]:
+        window = suite.json("/api/event")["event"]["voting_window"]
+        # As a *stranger*, because that is who the rule protects: an organiser is
+        # allowed to read the running tally at any point (that is what makes
+        # "hidden" checkable rather than a claim), so asking with the admin session
+        # would have measured the wrong thing.
+        anonymous = httpx.Client(base_url=BASE_URL, timeout=TIMEOUT)
+        try:
+            results = anonymous.get("/api/vote/results")
+        finally:
+            anonymous.close()
+        if window["results_visible"]:
+            assert results.status_code == 200, f"window closed but the tally -> {results.status_code}"
+            body = results.json()
+            assert body["visibility"]["results_visible"] is True
+            return PASS, (
+                f"the voting window is closed, so the tally is public: "
+                f"{len(body['results'])} projects, {body['totals']['votes']} votes"
+            )
+        assert results.status_code == 403, (
+            f"window open but the tally -> {results.status_code}: a running total would let the "
+            "first votes decide the rest"
+        )
+        reason = results.json()["detail"]["detail"]
+        assert "close" in reason.lower(), f"the refusal does not explain itself: {reason}"
+        return PASS, (
+            f"window {window['phase']}, so the tally is refused with its reason: {reason}"
+        )
+
+    @suite.check("T3", "Project comments are public, gated, and refuse repeats")
+    def _() -> tuple[str, str]:
+        gallery = suite.json("/api/gallery")["projects"]
+        assert gallery, "the public gallery lists no projects"
+        submission_id = gallery[0]["id"]
+        before = suite.json(f"/api/submissions/{submission_id}/comments")
+        assert "comments" in before, f"no comment thread: {list(before)[:4]}"
+
+        # With no identity of any kind, a comment is refused: the T3 door is a
+        # verified address, and an unverified one is not a speaker.
+        anonymous = httpx.Client(base_url=BASE_URL, timeout=TIMEOUT)
+        try:
+            refused = anonymous.post(
+                f"/api/submissions/{submission_id}/comments", json={"body": "anonymous"}
+            )
+            assert refused.status_code in (401, 403), (
+                f"an unidentified commenter -> {refused.status_code}"
+            )
+        finally:
+            anonymous.close()
+
+        text = f"Acceptance probe {suite.stamp}."
+        first = suite.post(f"/api/submissions/{submission_id}/comments", json={"body": text})
+        assert first.status_code == 201, first.text[:200]
+        again = suite.post(f"/api/submissions/{submission_id}/comments", json={"body": text})
+        assert again.status_code == 409, (
+            f"the same words twice in a row -> {again.status_code}: flooding is not a conversation"
+        )
+
+        # Read the thread back as a stranger, because that is where the address
+        # question is decided: the organiser is the moderator and does see who
+        # wrote what, and asserting on the organiser's own view would have been
+        # asserting the wrong thing.
+        reader = httpx.Client(base_url=BASE_URL, timeout=TIMEOUT)
+        try:
+            after = reader.get(f"/api/submissions/{submission_id}/comments").json()
+        finally:
+            reader.close()
+        assert after["count"] == before["count"] + 1
+        assert all(row.get("author_email") is None for row in after["comments"]), (
+            "a public thread exposed a commenter's address"
+        )
+        return PASS, (
+            f"thread readable anonymously ({after['count']} visible), anonymous posting refused, "
+            f"a duplicate refused with 409, no address in the public payload"
+        )
+
+    # ── T4: outbound, signed and reproducible ───────────────────────────────
+
+    @suite.check("T4", "Signed participation records verify, and revocation is not an edit")
+    def _() -> tuple[str, str]:
+        issued = suite.post(
+            "/api/admin/records/issue", json={"judges": True, "teams": True, "winners": 2}
+        )
+        assert issued.status_code == 201, issued.text[:200]
+        body = issued.json()
+        assert "key" in body and body["key"]["fingerprint"], "no verification key was published"
+
+        listing = suite.json("/api/admin/records")
+        assert listing["records"], "issuing reported records but none are listed"
+        record = listing["records"][0]
+        code = record["code"]
+
+        verified = suite.json(f"/api/records/{code}")
+        assert verified["verification"]["verified"] is True, "a public verifier could not verify it"
+        assert verified["record"]["signature"].startswith("hmac-sha256="), (
+            "the record is not signed, so it proves nothing"
+        )
+        signature = verified["record"]["signature"]
+
+        certificate = client.get(f"/api/records/{code}/certificate")
+        assert certificate.status_code == 200, certificate.text[:200]
+        assert "text/html" in certificate.headers["content-type"]
+        page = certificate.text
+        assert code in page and "hmac-sha256" in page, "the certificate omits its own proof"
+        assert "<script" not in page and "<link" not in page, (
+            "the certificate fetches something, so it will not print offline"
+        )
+
+        revoked = suite.post(f"/api/admin/records/{code}/revoke", json={"reason": "acceptance probe"})
+        assert revoked.status_code == 200, revoked.text[:200]
+        after = suite.json(f"/api/records/{code}")
+        assert after["revocation"]["revoked"] is True
+        assert after["record"]["signature"] == signature, "revocation altered the signed record"
+        return PASS, (
+            f"{body['totals']['issued']} issued, {body['totals']['already_issued']} already present; "
+            f"{code} verified publicly, printable certificate served as self-contained HTML, "
+            f"and revocation left the signature intact"
+        )
+
+    @suite.check("T4", "The webhook outbox delivers a signed delivery and retries")
+    def _() -> tuple[str, str]:
+        # The receiver is this deployment's own logout route: the one route it serves
+        # that accepts an unauthenticated POST and answers 200. A webhook test that
+        # needed the public internet would only ever run on a laptop that has one;
+        # pointing it at a route the API can always reach keeps the outbound path
+        # observable with the network off, which is the rule the whole project
+        # follows — and nothing is mutated by a request that clears a cookie the
+        # caller was not sending.
+        receiver = "http://127.0.0.1:8000/api/auth/logout"
+        created = suite.post(
+            "/api/admin/webhooks",
+            json={"url": receiver, "description": f"acceptance {suite.stamp}", "events": ["webhook.test"]},
+        )
+        assert created.status_code == 201, created.text[:200]
+        endpoint = created.json()["endpoint"]
+        assert len(endpoint["secret"]) >= 32, "no signing secret was issued"
+
+        try:
+            queued = suite.post(f"/api/admin/webhooks/{endpoint['id']}/test")
+            assert queued.status_code == 200, queued.text[:200]
+            assert len(queued.json()["queued"]) == 1, "the test delivery fanned out to other endpoints"
+
+            dispatched = suite.post("/api/admin/webhooks/dispatch")
+            assert dispatched.status_code == 200, dispatched.text[:200]
+            outcomes = dispatched.json()["outcomes"]
+            assert outcomes, "dispatch attempted nothing, so the queue is not being flushed"
+            outcome = outcomes[0]
+            assert outcome["status"] == "delivered", (
+                f"the delivery did not arrive: {outcome} — an outbox that cannot deliver is a log"
+            )
+
+            detail = suite.json(f"/api/admin/webhooks/deliveries/{outcome['delivery_id']}")
+            assert detail["delivery"]["signature"].startswith("sha256="), "the delivery was unsigned"
+            return PASS, (
+                f"webhook.test queued for one endpoint, dispatched, delivered with HTTP "
+                f"{outcome['response_status']}, signature present, {outcome['attempts']} attempt(s)"
+            )
+        finally:
+            # Leave the deployment as it was found: a purge removes the probe's
+            # endpoint and the deliveries it produced.
+            client.delete(f"/api/admin/webhooks/{endpoint['id']}?purge=true")
+
+    @suite.check("T4", "The whole event exports as one credential-free, verifiable bundle")
+    def _() -> tuple[str, str]:
+        exported = client.get("/api/admin/bundle/export")
+        assert exported.status_code == 200, exported.text[:200]
+        checksum = exported.headers.get("X-Axion-Bundle-Checksum")
+        assert checksum, "the export publishes no checksum, so it cannot be identified"
+        document = exported.json()
+        serialised = json.dumps(document)
+        assert "password_hash" not in serialised, "the bundle carries a credential"
+
+        checked = suite.post("/api/admin/bundle/validate", json={"bundle": document})
+        assert checked.status_code == 200, checked.text[:200]
+        assert checked.json()["valid"] is True, f"a fresh export did not validate: {checked.json()}"
+
+        dry = suite.post("/api/admin/bundle/import", json={"bundle": document})
+        assert dry.status_code == 200, dry.text[:200]
+        result = dry.json()
+        assert result["mode"] == "dry_run", "the import wrote without being asked to"
+        assert result["created"] == {}, (
+            "importing an event into the deployment it came from created rows"
+        )
+        return PASS, (
+            f"bundle v{document['bundle_version']} sha256 {checksum[:12]}…, "
+            f"{document['counts']['submissions']} submissions / {document['counts']['scores']} verdicts, "
+            f"no credential, validates, and a dry-run import is idempotent ({len(result['updated'])} "
+            "tables matched by identity)"
+        )
+
+    @suite.check("T4", "The gallery embeds anywhere, with no third-party asset")
+    def _() -> tuple[str, str]:
+        embed = client.get("/api/embed/gallery")
+        assert embed.status_code == 200, embed.text[:200]
+        assert "text/html" in embed.headers["content-type"]
+        page = embed.text
+        assert "<script" not in page and "<link" not in page, (
+            "the embed fetches something, so a sponsor's page breaks when the network does"
+        )
+        cards = page.count('<li class="card">')
+        assert cards, "the embed rendered nothing"
+
+        snippet = suite.json("/api/embed/gallery/snippet?theme=dark&limit=6")
+        assert snippet["iframe"].startswith("<iframe"), "no paste-ready markup"
+        assert "limit=6&theme=dark" in snippet["src"], "the snippet ignores its own parameters"
+        return PASS, (
+            f"iframe-ready gallery with {cards} project cards and zero external references; "
+            f"snippet generated from the request's own origin ({snippet['src']})"
         )
 
     @suite.check("T4", "Pairwise comparison mode")

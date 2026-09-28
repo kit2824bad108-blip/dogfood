@@ -11,6 +11,12 @@ one row stays in "not executed".
 
 ## Executed
 
+Phases are cumulative and read in order: A1–A2 are the original build, A3 added PostgreSQL, Docker and CI,
+A4 reconciled the repository with the organisers' published files, and **A5 built the T3 and T4 surfaces**.
+A number that changes between phases (the fast suite's count, the route count, the check count) is restated
+in each phase that changed it rather than edited in place, so the record shows what was true when it was
+observed.
+
 | # | Command | Observed result |
 | - | ------- | --------------- |
 | 1 | `cd api && ./.venv/Scripts/python.exe -m pytest -q` | **125 passed**, 1 warning, 242 s. The warning is a Starlette deprecation notice about `anyio.abc.BlockingPortal`, not a failure. 102 ran before Phase A1; the 23 added are the checker-header, role-isolation, validator-CLI and two-clean-import determinism tests |
@@ -278,3 +284,54 @@ row of `acceptance.py` (row 21) so it cannot go missing again.
 16. **Migration on SQLite is broken at `0001`, and stays broken.** Recorded rather than fixed: the project
     migrates on PostgreSQL (which is what `alembic upgrade head` does in the container and in CI), and the
     fast suite builds its schema with `create_all`. The database we ship is the one that migrates.
+
+## Phase A5 — T3 and T4 built (2026-09-28)
+
+The community surface and the stretch tier were the two blocks of the ladder that were documented as
+*not built* rather than unclaimed. This phase builds them and re-runs every artefact, because a tier claim
+with no report behind it is the one thing an acceptance report exists to prevent.
+
+| # | Command | Observed result |
+| - | ------- | --------------- |
+| 26 | `cd api && python -m pytest -q --ignore=tests/pg` | **241 passed**, 1 warning, 8 m 29 s. 205 before this phase (plus 36 new tests: `test_community.py`, `test_webhooks.py`, `test_records.py`, `test_bundle_embed.py`) |
+| 27 | `AXION_TEST_DATABASE_URL=… python -m pytest -q tests/pg` | **118 passed**, 1 warning, 2 m 1 s. `tests/pg/test_migrations.py` migrates an empty database `0001`→`0008` and then compares every reflected column, nullability and length against the models — which is how defect 17 below was found |
+| 28 | `cd web && npm run typecheck && npm run build` | Clean: **11 routes** (was 9), 103 kB shared first-load JS — `/vote`, `/results` and `/projects/[id]` are new |
+| 29 | `docker compose down -v && docker compose up -d --build`, then `python3 run.py .dogfood.toml > acceptance-report.txt` | Migrations `0001`→`0008` on a fresh volume, fixture dataset seeded (41 submissions), then the organisers' checker: **7 PASS**, `claimed T1 T2, verified T1 T2` |
+| 30 | `AXION_API_URL=http://localhost:3000 python api/scripts/dogfood_check.py api/scripts/selfcheck.toml --out acceptance-report.selfcheck.txt` | **37 passed, 0 failed, 0 skipped** — up from 21 checks, and the new ones are behavioural: the tally refused with its reason, the ballot refused without a token, the outbox, the export's checksum, the embed's self-containment. Ladder: T1 4/4, T2 9/9, T3 5/5, T4 11/11, `Solid: T1, T2, T3, T4` |
+| 31 | `SEED_MODE=demo EVENT_SOURCE=env docker compose up -d --build`, then `AXION_API_URL=http://127.0.0.1:8000 python api/scripts/acceptance.py --out acceptance-report.axion.txt` | **34 passed, 0 failed, 2 skipped** (36 checks, was 30). The two skips are pairwise mode and the *closed*-event deadline path, which cannot be observed on an open event; both state their reason |
+| 32 | `docker compose up -d --build` back on the fixture dataset | `{"ready":true,"checks":{"database":"ok","migrations":"ok","dataset":"122 users, 41 submissions"}}` — the shipped default deployment, re-verified after the demo run |
+
+Three defects were found by the new checks rather than by review, which is the argument for having written
+them as observations of the deployment instead of as unit tests of the code:
+
+17. **`voters.created_at` was nullable in the migration and not-null in the model.** Migration `0007`
+    declared the timestamp without `nullable=False`, and a server default is not a substitute: the default
+    applies only when a column is omitted, so an explicit `NULL` would have produced a voter with no creation
+    time. `tests/pg/test_migrations.py` reflects the migrated schema and compares it to the models, and it
+    caught `voters`, `votes`, `comments`, `throttle_events`, `webhook_endpoints`, `webhook_deliveries` and
+    `participation_records` in one run. The migration test's own table and revision lists were updated in the
+    same commit — which is the point of pinning them: adding a table without saying so fails there.
+18. **The webhook panel's `dispatch` audit entry could not be serialised.** The details stored a Python
+    `set` of outcome statuses, and SQLAlchemy's JSON serialiser refuses one. Every dispatch would have failed
+    *after* delivering — the worst possible moment, since the deliveries would have gone out and the audit
+    entry recording them would not. Found by the first test that actually dispatched with a stubbed receiver.
+19. **Purge left orphaned deliveries on SQLite.** `webhook_deliveries.endpoint_id` declares
+    `ON DELETE CASCADE`, and Postgres honours it, but SQLite does not enforce foreign keys unless asked to —
+    and SQLite is the offline path. Deleting an endpoint removed the row and kept its deliveries, so the same
+    operator action left a different database behind depending on the backend. The purge now deletes the
+    deliveries explicitly, first, in code rather than relying on the engine.
+
+Two design corrections were made during this phase rather than after it. The comment-duplication window is
+compared in Python rather than in SQL, because SQLite returns naive datetimes from
+`DateTime(timezone=True)` and Postgres returns aware ones — an `aware >= :naive` comparison reads differently
+on the two backends, and the offline demo path is the one that would have broken. And a participation
+record's signature is taken over the payload **as stored** rather than over one rebuilt from columns, for the
+same reason: a certificate verified on another machine must not depend on a timestamp round-trip.
+
+### What this phase does not claim
+
+Pairwise/Bradley-Terry mode is still unimplemented and still reported as `SKIP` with its reason. Certificates
+are self-contained printable HTML rather than PDF, which is stated in the README and visible in the T4 check
+that fetches one. And the community tally's independence from the judged ranking is a design property, not a
+cryptographic one: the tests assert that a ballot outcome never appears in `axion_score`, not that a
+determined group of people with many addresses cannot inflate a number that is published beside it.

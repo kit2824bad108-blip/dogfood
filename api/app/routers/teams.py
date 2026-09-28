@@ -1,9 +1,6 @@
 """Team formation. One team per participant, joined by invite code or GitHub OAuth."""
 from __future__ import annotations
 
-import secrets
-import string
-
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -13,14 +10,9 @@ from ..db import get_db
 from ..deps import client_ip, current_user, require_role
 from ..models import Submission, Team, TeamMember, User
 from ..schemas import TeamCreateRequest, TeamJoinRequest
+from ..services import unique_invite_code
 
 router = APIRouter(prefix="/api/teams", tags=["teams"])
-
-INVITE_ALPHABET = string.ascii_uppercase + string.digits
-
-
-def _invite_code() -> str:
-    return "".join(secrets.choice(INVITE_ALPHABET) for _ in range(8))
 
 
 def membership(db: Session, user_id: int) -> TeamMember | None:
@@ -65,9 +57,7 @@ def create_team(
     if db.scalar(select(Team).where(Team.name == payload.name)) is not None:
         raise HTTPException(status_code=409, detail="That team name is taken")
 
-    code = _invite_code()
-    while db.scalar(select(Team).where(Team.invite_code == code)) is not None:
-        code = _invite_code()
+    code = unique_invite_code(db)
 
     team = Team(name=payload.name, invite_code=code, created_by=user.id)
     db.add(team)

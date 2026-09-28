@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import audit
+from .. import audit, webhooks
 from ..db import get_db
 from ..deps import client_ip, current_user, require_role
 from ..github import parse_repo
@@ -176,6 +176,21 @@ def upsert_submission(
             ip=client_ip(request),
             details={"track_id": submission.track_id},
         )
+        # A draft is announced too, because a team's own tooling (a status board, a
+        # Discord notifier) wants to know that work exists before it is finished.
+        # What it must never carry is a draft's *content* to anyone else: this is
+        # addressed to the organiser's subscribers, and drafts stay unlisted.
+        webhooks.emit(
+            db,
+            webhooks.EVENT_SUBMISSION_CREATED,
+            {
+                "submission_id": submission.id,
+                "team": team.name,
+                "title": submission.title,
+                "status": "draft",
+                "track_id": submission.track_id,
+            },
+        )
         db.commit()
         return {"submission": serialize_submission(submission, team)}
 
@@ -196,6 +211,20 @@ def upsert_submission(
             "flagged": report.get("flagged"),
             "pct_in_window": report.get("pct_in_window"),
             "track_id": submission.track_id,
+            "judges_assigned": assigned,
+        },
+    )
+    webhooks.emit(
+        db,
+        webhooks.EVENT_SUBMISSION_SUBMITTED,
+        {
+            "submission_id": submission.id,
+            "team": team.name,
+            "title": submission.title,
+            "track_id": submission.track_id,
+            "repo_url": submission.repo_url,
+            "submitted_at": iso(submission.submitted_at),
+            "commit_integrity_pct_in_window": submission.integrity_pct_in_window,
             "judges_assigned": assigned,
         },
     )

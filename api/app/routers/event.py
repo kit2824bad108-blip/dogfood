@@ -12,13 +12,14 @@ decisions are deliberate and are defended in THREAT-MODEL.md:
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from ..config import settings
 from ..db import get_db
-from ..models import Assignment, Score, Submission, Team, Track, User
+from .. import voting
+from ..models import Assignment, Comment, Score, Submission, Team, Track, User, Vote
 from ..services import (
     active_rubric,
     event_window,
@@ -50,6 +51,7 @@ def public_event(db: Session = Depends(get_db)) -> dict:
     ) or 0
 
     criteria = normalized_criteria(rubric)
+    community_window = voting.voting_window()
     return {
         "event": {
             "name": settings.event_name,
@@ -57,6 +59,12 @@ def public_event(db: Session = Depends(get_db)) -> dict:
             "ends_at": window["closes_at"],
             "phase": "upcoming" if window["not_yet_open"] else ("closed" if window["closed"] else "open"),
             "submission_window": window,
+            # The community window has its own clock (T3), and the shell needs the
+            # phase to decide whether to offer a ballot or a results link. The
+            # *tally* is never here: see /api/vote/results, which 403s until the
+            # window closes.
+            "voting_window": community_window,
+            "community": community_stats(db, community_window),
         },
         "environment": {
             "github_oauth_enabled": settings.github_oauth_enabled,
@@ -88,6 +96,31 @@ def public_event(db: Session = Depends(get_db)) -> dict:
             "assignments": db.scalar(select(func.count(Assignment.id))) or 0,
         },
     }
+
+
+def community_stats(db: Session, window: dict) -> dict:
+    """Public community numbers, and only the ones that are safe to publish.
+
+    Comment counts are public — a project with discussion is a fact about the
+    project. Vote counts are not, while the window is open: a running tally is
+    what turns a community vote into a bandwagon, so the counts appear here only
+    once the window has closed, when `/api/vote/results` would report them anyway.
+    """
+    comments = db.scalar(
+        select(func.count(Comment.id)).where(Comment.status == "visible")
+    ) or 0
+    payload = {
+        "comments": comments,
+        "results_visible": window["results_visible"],
+    }
+    if window["results_visible"]:
+        payload["votes_cast"] = db.scalar(
+            select(func.count(Vote.id)).where(Vote.status == "cast")
+        ) or 0
+        payload["voters"] = db.scalar(
+            select(func.count(func.distinct(Vote.voter_id))).where(Vote.status == "cast")
+        ) or 0
+    return payload
 
 
 @router.get("/gallery")
@@ -156,3 +189,59 @@ def gallery(
             for submission, team, found in rows
         ],
     }
+
+
+@router.get("/gallery/{submission_id}")
+def project_detail(submission_id: int, db: Session = Depends(get_db)) -> dict:
+    """One public project: the gallery row, its commentary, and its tally if public.
+
+    The same two withholdings as the gallery apply — no `demo_url`, no
+    `video_url`, because those are the presentation tier the blind gate protects.
+    The community tally appears only after the voting window closes, which keeps
+    the "results hidden" rule true of *every* public endpoint rather than only of
+    the one that is named after it.
+    """
+    submission = db.get(Submission, submission_id)
+    if (
+        submission is None
+        or submission.status != "submitted"
+        or submission.duplicate_of_submission_id is not None
+    ):
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    team = db.get(Team, submission.team_id)
+    track = db.get(Track, submission.track_id) if submission.track_id else None
+    window = voting.voting_window()
+
+    comment_count = db.scalar(
+        select(func.count(Comment.id)).where(
+            Comment.submission_id == submission.id, Comment.status == "visible"
+        )
+    ) or 0
+
+    payload = {
+        "project": {
+            "id": submission.id,
+            "title": submission.title,
+            "team": team.name if team else None,
+            "summary": submission.summary,
+            "repo_url": submission.repo_url,
+            "docs_url": submission.docs_url,
+            "track": {"slug": track.slug, "name": track.name} if track else None,
+            "submitted_at": iso(submission.submitted_at),
+            "source_ref": submission.source_ref,
+        },
+        "comments": {"count": comment_count},
+        "voting_window": window,
+    }
+    if window["results_visible"]:
+        community = db.execute(
+            select(func.count(Vote.id), func.avg(Vote.score)).where(
+                Vote.submission_id == submission.id, Vote.status == "cast"
+            )
+        ).one()
+        payload["community"] = {
+            "votes": community[0] or 0,
+            "average": round(float(community[1]), 3) if community[1] is not None else None,
+        }
+    return payload

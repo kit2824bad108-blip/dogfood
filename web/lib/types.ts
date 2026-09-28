@@ -67,6 +67,12 @@ export type PublicEvent = {
     ends_at: string;
     phase: "upcoming" | "open" | "closed";
     submission_window: EventWindow;
+    /**
+     * The community clock, which is deliberately not the submission deadline: an
+     * event can stop accepting work and still be taking votes. It lives inside
+     * `event` because it is a property of the event, not of the deployment.
+     */
+    voting_window: VotingWindow;
   };
   environment: {
     github_oauth_enabled: boolean;
@@ -104,6 +110,17 @@ export type Gallery = {
   count: number;
   tracks: Array<{ slug: string; name: string }>;
   projects: GalleryProject[];
+};
+
+/**
+ * One public project. `community` is absent until the voting window closes, and the
+ * presentation links are absent always — they are the tier the blind gate protects.
+ */
+export type ProjectDetail = {
+  project: GalleryProject & { source_ref: string | null };
+  comments: { count: number };
+  voting_window: VotingWindow;
+  community?: { votes: number; average: number | null };
 };
 
 export type JudgeProgressRow = {
@@ -403,4 +420,214 @@ export type ArchiveBundle = {
     results: Array<Record<string, unknown>>;
   };
   markdown: string;
+};
+
+// ── the community surface (T3) ───────────────────────────────────────────────
+
+/**
+ * The community window is its own clock, separate from the submission deadline.
+ * `results_visible` is false until it closes: no public endpoint returns a tally
+ * while a running total could still decide the rest of the vote.
+ */
+export type VotingWindow = {
+  now: string;
+  opens_at: string;
+  closes_at: string;
+  phase: "upcoming" | "open" | "closed";
+  open: boolean;
+  closed: boolean;
+  results_visible: boolean;
+};
+
+export type Voter = {
+  id: number;
+  email: string;
+  display_name: string | null;
+  verified: boolean;
+  blocked: boolean;
+  blocked_reason: string | null;
+};
+
+/** One row of a ballot. `position` is this voter's own order, not a ranking. */
+export type BallotEntry = {
+  position: number;
+  submission_id: number;
+  title: string;
+  team: string;
+  summary: string | null;
+  repo_url: string;
+  docs_url: string | null;
+  track: { slug: string; name: string } | null;
+  my_score: number | null;
+  my_status: string | null;
+};
+
+export type Ballot = {
+  voter: Voter;
+  window: VotingWindow;
+  ballot: BallotEntry[];
+  progress: { votable: number; cast: number; remaining: number };
+  ordering: { method: string; properties: string[] };
+};
+
+export type VoteRegistration = {
+  voter: Voter;
+  token: string;
+  verify_url: string;
+  delivery: { channel: string; mailer_configured: boolean; note: string };
+  window: VotingWindow;
+};
+
+export type Comment = {
+  id: number;
+  submission_id: number;
+  author: string;
+  author_email: string | null;
+  author_kind: "user" | "voter" | "unknown";
+  body: string;
+  status: string;
+  created_at: string | null;
+  moderated_reason: string | null;
+};
+
+export type CommentThread = {
+  submission_id: number;
+  title: string;
+  count: number;
+  includes_hidden: boolean;
+  comments: Comment[];
+};
+
+export type CommunityResult = {
+  submission_id: number;
+  title: string | null;
+  votes: number;
+  average: number | null;
+  lowest: number | null;
+  highest: number | null;
+  distribution: Record<string, number>;
+  struck_votes?: number;
+};
+
+export type CommunityResults = {
+  results: CommunityResult[];
+  totals: Record<string, number>;
+  window: VotingWindow;
+  visibility: { results_visible: boolean; shown_to: string; reason: string };
+};
+
+// ── the outbound webhook console (T4) ───────────────────────────────────────
+
+export type WebhookEndpoint = {
+  id: number;
+  url: string;
+  description: string | null;
+  events: string[] | "all";
+  active: boolean;
+  created_by: string | null;
+  failure_count: number;
+  last_delivered_at: string | null;
+  last_failed_at: string | null;
+  created_at: string | null;
+  secret: string | null;
+  signature_header: string;
+  signature_scheme: string;
+};
+
+export type WebhookDelivery = {
+  id: number;
+  endpoint_id: number;
+  event: string;
+  status: "pending" | "delivered" | "failed" | "dead";
+  attempts: number;
+  response_status: number | null;
+  error: string | null;
+  created_at: string | null;
+  next_attempt_at: string | null;
+  delivered_at: string | null;
+  payload?: Record<string, unknown>;
+  signature?: string;
+  response_body?: string | null;
+};
+
+export type WebhookConsole = {
+  endpoints: WebhookEndpoint[];
+  catalogue: Array<{ event: string; description: string }>;
+  queue: { pending: number; delivered: number; failed: number; dead: number };
+  signature: {
+    header: string;
+    timestamp_header: string;
+    delivery_header: string;
+    scheme: string;
+    tolerance_seconds: number;
+  };
+  delivery: { attempts: number; backoff_seconds: number[]; timeout_seconds: number; worker: string };
+  dead_letters: number;
+};
+
+// ── signed participation records (T4) ───────────────────────────────────────
+
+export type ParticipationRecord = {
+  code: string;
+  subject_kind: "judge" | "team" | "participant";
+  subject_name: string;
+  subject_ref: string | null;
+  subject_email: string | null;
+  role: string | null;
+  event_name: string;
+  issued_at: string | null;
+  issued_by: string | null;
+  algorithm: string;
+  signature: string;
+  revoked: boolean;
+  revoked_at: string | null;
+  revoked_reason: string | null;
+  verify_url: string;
+  certificate_url: string;
+  payload?: Record<string, unknown>;
+};
+
+export type RecordKey = {
+  algorithm: string;
+  fingerprint: string;
+  published: boolean;
+  key: string | null;
+  reason: string;
+  scheme: string;
+};
+
+export type RecordConsole = {
+  records: ParticipationRecord[];
+  counts: { total: number; revoked: number };
+  key: RecordKey;
+};
+
+// ── whole-event bundles (T4) ────────────────────────────────────────────────
+
+export type BundleEvent = {
+  name: string;
+  starts_at: string;
+  ends_at: string;
+  voting_opens_at: string;
+  voting_closes_at: string;
+};
+
+export type EventBundle = {
+  bundle_version: number;
+  generated_at: string;
+  generated_by: string;
+  event: BundleEvent;
+  counts: Record<string, number>;
+  tables: Record<string, Array<Record<string, unknown>>>;
+  checksum: string;
+};
+
+export type BundleImportResult = {
+  mode: "dry_run" | "apply";
+  refused: boolean;
+  created: Record<string, number>;
+  updated: Record<string, number>;
+  checksum?: string;
+  event?: BundleEvent;
+  note: string;
 };

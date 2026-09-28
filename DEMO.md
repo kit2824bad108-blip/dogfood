@@ -32,6 +32,7 @@ passwordless path the checker's headers use:
 | Organiser | `organiser@sample-hack-2026.dogfood` | The account that runs the event |
 | Participant | `priya1@example.org` | A team member, from the dataset |
 | Judge | created in shot 6 | — |
+| Community voter | any address, in shot 10 | No account: the ballot link is the identity |
 
 Before recording: close every other tab, set the browser to 100% zoom, and hide the bookmarks bar. Size the
 window to 1600×900 so the tables do not wrap.
@@ -49,6 +50,22 @@ window to 1600×900 so the tables do not wrap.
 | 7 | 3:40–4:20 | `/judge/score/[id]` | Score the technical rubric, submit, watch presentation unlock, then score that too. | **judge** — a weighted rubric, in the order the portal dictates. |
 | 8 | 4:20–4:50 | `/admin` → *Leaderboard* | Toggle **Naive average** ↔ **Axion normalized**. Point at the rank ± column: a project moves, and [JUDGING.md](./JUDGING.md) says why. Export the leaderboard CSV and open it. | **publish** — the normalization is visible, not folklore, and the CSV export is one click. |
 | 9 | 4:50–5:00 | `/admin` → *Archive* | Generate the archive and show the `RESULTS.md` preview. | **publish** — the results are a portable artefact. Nothing is deleted. |
+
+## If you have ninety seconds left, show the community surface
+
+The five-minute lifecycle above is what the brief asks for. T3 and T4 are the parts a viewer cannot see in a
+judging walkthrough, so they get a short second act — and each beat is a *refusal* or a *proof*, because that
+is where the interesting decisions are.
+
+| # | Time | On screen | What you do | What it proves |
+| - | ---- | --------- | ----------- | -------------- |
+| 10 | +0:00–0:30 | `/vote` | Enter an address, follow the returned link (no mail server, and the page says so), then cast one score. Press a second score on the same project and show the `409`. | **T3** — an address plus a link is the gate, and a vote is final rather than editable. |
+| 11 | +0:30–0:50 | `/results` | Show the refusal: while the window is open there is no tally, only the reason. | **T3** — results hidden until the close, and the refusal explains itself. |
+| 12 | +0:50–1:10 | `/projects/[id]` | Post a comment as the verified voter; post the same words again and show the `409`; then post from a private window and show that an unidentified commenter is refused. | **T3** — the thread is public, the identity behind it is not, and flooding is bounded. |
+| 13 | +1:10–1:30 | `/admin` → *Webhooks*, *Records*, *Export & import* | Register a receiver, press **Test**, then **Dispatch now** and show the delivery go green with its HTTP status. Issue records, open one certificate, revoke it and show the signature unchanged. Download the bundle, show the checksum, then show the dry-run import reporting updates and no creations. | **T4** — signed outbound delivery, signed records anyone can verify, and an event that can leave the deployment it was run on. |
+
+Shot 13 is the one to leave the room with: the last three panels are what an organiser needs *after* the
+event, and none of them requires a cloud account, a worker process or a second service.
 
 ## The two things worth saying out loud
 

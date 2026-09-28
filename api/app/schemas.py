@@ -124,6 +124,93 @@ class BalanceAssignmentRequest(BaseModel):
     dry_run: bool = True
 
 
+class VoterRegisterRequest(BaseModel):
+    """Ask for a ballot. The address is normalised, then unique per event."""
+
+    email: str = Field(min_length=3, max_length=255)
+    name: str = Field(default="", max_length=255)
+
+    @field_validator("email")
+    @classmethod
+    def valid_email(cls, value: str) -> str:
+        value = value.strip().lower()
+        if not EMAIL_RE.match(value):
+            raise ValueError("Enter a valid email address")
+        return value
+
+
+class VoterVerifyRequest(BaseModel):
+    token: str = Field(min_length=8, max_length=200)
+
+
+class VoteCastRequest(BaseModel):
+    """One community vote. The scale is 1-5, the same scale the fixture uses."""
+
+    submission_id: int = Field(ge=1)
+    score: int = Field(ge=1, le=5)
+
+
+class BallotCastRequest(BaseModel):
+    """A whole ballot at once, so a voter's choices land in one transaction."""
+
+    votes: list[VoteCastRequest] = Field(min_length=1, max_length=500)
+
+
+class CommentCreateRequest(BaseModel):
+    body: str = Field(min_length=1, max_length=2000)
+
+
+class CommentModerateRequest(BaseModel):
+    status: Literal["visible", "hidden"] = "hidden"
+    reason: Optional[str] = Field(default=None, max_length=1000)
+
+
+class VoteStrikeRequest(BaseModel):
+    reason: str = Field(min_length=3, max_length=1000)
+
+
+class VoterBlockRequest(BaseModel):
+    """Block or reinstate a ballot. Blocking never removes votes already cast."""
+
+    blocked: bool = True
+    reason: Optional[str] = Field(default=None, max_length=1000)
+
+
+class WebhookEndpointCreateRequest(BaseModel):
+    """Register a webhook receiver. `events` empty means every event."""
+
+    url: str = Field(min_length=8, max_length=500)
+    description: Optional[str] = Field(default=None, max_length=255)
+    events: Optional[list[str]] = Field(default=None, max_length=40)
+    active: bool = True
+
+
+class WebhookEndpointUpdateRequest(BaseModel):
+    description: Optional[str] = Field(default=None, max_length=255)
+    events: Optional[list[str]] = Field(default=None, max_length=40)
+    active: Optional[bool] = None
+    rotate_secret: bool = False
+
+
+class RecordIssueRequest(BaseModel):
+    """Issue participation records. Judges and teams are both covered by default."""
+
+    judges: bool = True
+    teams: bool = True
+    winners: int = Field(default=0, ge=0, le=10)
+
+
+class RecordRevokeRequest(BaseModel):
+    reason: str = Field(min_length=3, max_length=1000)
+
+
+class BundleImportRequest(BaseModel):
+    """A whole-event bundle. `mode=apply` writes; the default is a dry run."""
+
+    bundle: dict
+    mode: Literal["dry_run", "apply"] = "dry_run"
+
+
 class JudgeCreateRequest(BaseModel):
     email: str = Field(min_length=3, max_length=255)
     password: str = Field(min_length=8, max_length=200)

@@ -28,6 +28,12 @@ DEFAULT_WINDOW = timedelta(hours=72)
 # lead-in means an event created by simply starting the app is genuinely open:
 # the window is now-relative rather than an artefact of when the process started.
 DEFAULT_OPEN_LEAD = timedelta(hours=1)
+# How long the community keeps voting after the submission deadline, when the
+# voting window is derived rather than configured. The community window is its own
+# clock precisely so that an event can keep the two separate; the default keeps it
+# open for three days past the deadline, which is the shortest span that still
+# lets people who are not in the room take part.
+VOTING_TAIL = timedelta(hours=72)
 
 
 def _env(name: str, default: str | None = None) -> str | None:
@@ -107,6 +113,11 @@ def fixture_event_name() -> str | None:
 class Settings:
     database_url: str
     secret_key: str
+    # The key that signs participation records. A deployment can rotate the session
+    # secret without invalidating every certificate it has ever issued, which is the
+    # point of keeping them separate — and the two are the same value by default so
+    # that nothing has to be configured for a demo.
+    record_signing_key: str
     web_url: str
     cookie_name: str
     cookie_secure: bool
@@ -114,6 +125,12 @@ class Settings:
     event_name: str
     event_start: datetime
     event_end: datetime
+    # The community voting window (T3). Deliberately separate from the submission
+    # window: the submission deadline is about when work stops, this is about when
+    # the crowd stops counting, and an event is entitled to place them differently.
+    # Default is "open with the event, close three days after it".
+    voting_start: datetime
+    voting_end: datetime
     github_client_id: str | None
     github_client_secret: str | None
     github_token: str | None
@@ -144,6 +161,35 @@ class Settings:
     @property
     def event_window_opens_in_future(self) -> bool:
         return datetime.now(timezone.utc) < self.event_start
+
+    @property
+    def records_verifiable_publicly(self) -> bool:
+        """Whether the *verification key* may be published yet (T4).
+
+        Participation records are signed with HMAC, so publishing the key lets
+        anyone verify — and also lets anyone forge. That trade is resolved by time
+        rather than by pretending it does not exist: the key is published only once
+        the event window has closed. Before that, records are verifiable by the
+        organiser who holds the key; after it, by anyone, and a forgery created
+        afterwards changes nothing that has already been issued and cited.
+        """
+        return self.event_window_closed
+
+    @property
+    def voting_window_open(self) -> bool:
+        now = datetime.now(timezone.utc)
+        return self.voting_start <= now <= self.voting_end
+
+    @property
+    def voting_results_visible(self) -> bool:
+        """Community results are published only once the voting window has closed.
+
+        Before it opens there is nothing to publish; while it is open, publishing a
+        running tally would let the first votes decide the rest. This is a property
+        of the deployment's clock rather than a flag, so there is no way to switch
+        it on by accident.
+        """
+        return datetime.now(timezone.utc) > self.voting_end
 
     @property
     def local_dev_login(self) -> bool:
@@ -201,9 +247,11 @@ class Settings:
             # accepted, not rejected, on a cold start.
             event_start = explicit_start or (now - DEFAULT_OPEN_LEAD)
             event_end = event_start + DEFAULT_WINDOW
+        secret = _env("SECRET_KEY", "dev-only-secret-change-me") or ""
         return cls(
             database_url=_env("DATABASE_URL", "sqlite+pysqlite:///:memory:") or "",
-            secret_key=_env("SECRET_KEY", "dev-only-secret-change-me") or "",
+            secret_key=secret,
+            record_signing_key=_env("RECORD_SIGNING_KEY") or secret,
             web_url=_env("WEB_URL", "http://localhost:3000") or "",
             cookie_name="axion_session",
             cookie_secure=_env_bool("COOKIE_SECURE", False),
@@ -211,6 +259,13 @@ class Settings:
             event_name=fixture_name or _env("EVENT_NAME", "Axion Hackathon") or "",
             event_start=event_start,
             event_end=event_end,
+            # The community window is derived from the event unless it is named
+            # explicitly, and it is only ever *derived* — a value from the
+            # environment cannot re-open a closed event, for the same reason the
+            # fixture window cannot be overridden (see the EVENT_SOURCE note above).
+            voting_start=_env_dt("VOTING_OPENS_AT", event_start) or event_start,
+            voting_end=_env_dt("VOTING_CLOSES_AT", event_end + VOTING_TAIL)
+            or (event_end + VOTING_TAIL),
             github_client_id=_env("GITHUB_CLIENT_ID"),
             github_client_secret=_env("GITHUB_CLIENT_SECRET"),
             github_token=_env("GITHUB_TOKEN"),

@@ -279,6 +279,14 @@ If an event wants a weighted composite, it is a small change: normalize each tie
 function, then combine with explicit weights (for example `0.7·z_technical + 0.3·z_presentation`) and
 publish the weights alongside the results.
 
+**Community votes are not normalized, and are never blended in either.** T3 adds an email-gated public
+ballot, and the one thing it must not be able to do is move the ranking: `axion_score` is computed from
+`scores` (judges) and the community tally is computed from `votes` (strangers). They are separate tables,
+separate endpoints and separate numbers, and no code path reads one into the other — the independence is a
+structural fact rather than a rule someone has to remember. The community figure is published beside the
+judged result, after its own window closes, with its turnout and its struck votes visible; an organiser who
+wants a composite can compute one, but nothing here will do it silently.
+
 ## 9. Coverage, provisional scores and balanced assignment
 
 Sections 1–8 describe an event with full coverage. The cases where coverage is *not* full need saying too,

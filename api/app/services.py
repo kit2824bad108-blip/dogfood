@@ -1,6 +1,7 @@
 """Shared domain services used by several routers."""
 from __future__ import annotations
 
+import secrets
 from datetime import datetime, timezone
 
 from sqlalchemy import func, select
@@ -8,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from .config import settings
 from .github import check_commit_integrity
-from .models import Assignment, Prize, Rubric, Submission, Track, User
+from .models import Assignment, Prize, Rubric, Score, Submission, Team, Track, User
 
 # The default rubric mirrors the organiser guidance: Innovation 30%, Code
 # Quality 70%. Weights are normalised by their sum, so these could equally be
@@ -18,6 +19,52 @@ DEFAULT_CRITERIA: list[dict] = [
     {"key": "code_quality", "label": "Code Quality", "weight": 70.0},
 ]
 DEFAULT_RUBRIC_NAME = "Default technical rubric"
+
+
+# Letters and digits, minus the ones that get misread aloud. An invite code is
+# dictated over a call and typed from a screenshot, so O/0 and I/1 are hazards
+# rather than aesthetics.
+INVITE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+INVITE_LENGTH = 8
+
+
+def unique_invite_code(db: Session) -> str:
+    """An unused invite code. Defined once so a team created in the console and a
+    team created by a bundle import cannot end up with differently-shaped codes."""
+    while True:
+        code = "".join(secrets.choice(INVITE_ALPHABET) for _ in range(INVITE_LENGTH))
+        if db.scalar(select(Team).where(Team.invite_code == code)) is None:
+            return code
+
+
+def canonical_only(statement):
+    """Rank canonical submissions. Duplicates are reported, never ranked.
+
+    A submission marked as a duplicate of another would otherwise compete against
+    the very entry it duplicates — the same work taking two places. The predicate
+    lives here, in one place, because the leaderboard, the exports and the signed
+    participation records all have to agree about what counts as a result.
+    """
+    return statement.where(Submission.duplicate_of_submission_id.is_(None))
+
+
+def score_records(db: Session) -> list:
+    """Every technical verdict as a `zscore.ScoreRecord`, duplicates excluded.
+
+    This is *the* input to the normalization engine: one definition, so the
+    leaderboard in the console and the ranking inside a signed result record cannot
+    disagree.
+    """
+    from . import zscore
+
+    rows = db.execute(
+        canonical_only(
+            select(Score.judge_id, Score.submission_id, Score.technical_score)
+            .join(Submission, Submission.id == Score.submission_id)
+            .where(Score.technical_score.isnot(None))
+        )
+    ).all()
+    return [zscore.ScoreRecord(judge_id=j, submission_id=s, score=float(t)) for j, s, t in rows]
 
 
 def active_rubric(db: Session) -> Rubric | None:

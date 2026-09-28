@@ -209,12 +209,23 @@ route or a file in this repository.
 | ---- | ------ | -------- |
 | **T1 — core** | **Claimed** | Event window, tracks and prizes, drafts editable before the deadline, server-side deadline enforcement, a searchable public gallery, registration and teams with invite codes |
 | **T2 — judging** | **Claimed** | Weighted rubrics, blind technical-then-presentation ordering, Z-score normalization with a worked proof, per-judge progress, the normalized leaderboard, CSV exports of the leaderboard, every verdict and judging progress, coverage/provisional marking, and a duplicate review queue |
-| **T3 — community** | **Not claimed** | There is no community voting, no comment thread and no ballot anti-abuse control. The audit trail is real and append-only, but an audit trail is not a voting system, and T3 is not claimed on its strength. |
-| **T4 — stretch** | **Not claimed** | No webhook outbox, no certificates, no signed judge records and no embeddable gallery. The OpenAPI schema is served and the archive is real; that is not T4. |
+| **T3 — community** | **Claimed** | Email-gated community ballots (`/vote`), a per-voter ballot order that is stable and reproducible, votes that are final and strikable rather than editable, project comment threads with duplicate refusal and moderation, and a tally that is refused with its reason while the window is open and published when it closes |
+| **T4 — stretch** | **Claimed** | A signed webhook outbox with retries and dead-letter replay, signed participation records anyone can verify plus printable certificates, one whole-event bundle that exports and re-imports, and a self-contained embeddable gallery |
 
 Bonus items claimed, each with something behind it: the **normalization proof** ([JUDGING.md](./JUDGING.md)),
 **API first** (`/api/docs` and `/api/openapi.json`, with a run-time check that the expected paths still
-exist) and the **threat model** ([THREAT-MODEL.md](./THREAT-MODEL.md)).
+exist), the **threat model** ([THREAT-MODEL.md](./THREAT-MODEL.md)) and the **one-command rule** (one
+`docker compose up` brings up the database, migrations, the seeded event and the portal, with no external
+service — the webhook receiver in the acceptance suite is the deployment's own route, precisely so the
+outbound path is observable with the network off).
+
+Two things are deliberately *not* claimed. There is no pairwise/Bradley-Terry mode: the requirement text
+this repository was given is truncated after that heading, and guessing at a scoring model that then feeds
+the normalized leaderboard would have risked the part of the ladder that is actually worth something. PDF
+certificates are not produced either — the certificate is self-contained HTML that prints from the browser,
+which is the same artefact without a PDF dependency in an air-gapped deployment. Both are reported as `SKIP`
+with their reason in [acceptance-report.axion.txt](./acceptance-report.axion.txt) rather than quietly
+missing.
 
 ### What the organisers' checker actually verified
 
@@ -243,6 +254,107 @@ judge nothing about deadline enforcement.
 Their seven checks are also asserted in the fast test suite, so a regression fails in CI in seconds rather
 than in a manual run: `api/tests/test_dogfood_acceptance.py` makes the same seven requests, and its last
 test starts a real uvicorn on a free port, imports the real dataset and runs their real `run.py` over HTTP.
+
+`claimed T1 T2` in that file is not shyness. Their checker has seven checks and all seven are T1/T2, so
+claiming T3 or T4 there would print `claimed T1 T2 T3 T4, verified T1 T2` — a note saying the claim was
+not verified. T3 and T4 are claimed where the evidence exists, in our own manifests:
+[acceptance-report.selfcheck.txt](./acceptance-report.selfcheck.txt) (37 checks, T1–T4 all verified) and
+[acceptance-report.axion.txt](./acceptance-report.axion.txt) (36 checks, 34 pass, 2 skip with reasons). The
+self-check prints the ladder rule it applies, which is the same one their `run.py` uses: a tier counts only
+if every check of its own passed *and* every tier below it did.
+
+```
+T1   claimed      verified                                4/4 checks passed
+T2   claimed      verified                                9/9 checks passed
+T3   claimed      verified                                5/5 checks passed
+T4   claimed      verified                               11/11 checks passed
+
+Solid: T1, T2, T3, T4
+```
+
+## The community surface (T3)
+
+A judge's verdict and a stranger's vote are different instruments, so they are different tables, different
+endpoints and different rules — and they are never averaged into one number.
+
+**A ballot is an address plus a link, never an account.** `POST /api/vote/register` takes an address,
+stores a **SHA-256 digest** of the token it returns, and the link to `GET /api/vote/verify?token=…` is what
+proves the address and sets the ballot cookie. Axion has no mail server and must run with the network off,
+so the link is returned to the caller and listed in the organiser console, and the endpoint says
+`mailer_configured: false` on the wire rather than pretending otherwise. A leaked or mistyped link stops
+working the moment a new one is requested.
+
+**The ballot order is determined, not shuffled.** Each voter's list is sorted by
+`hmac-sha256(secret, token_digest + ':' + submission_id)`, which gives three properties at once: the order is
+stable across reloads (a ballot that reshuffles is unusable), it differs per voter (a fixed alphabetical
+list hands the top of it an advantage that has nothing to do with quality), and it is reproducible by an
+organiser investigating a complaint. The ballot payload states the method so this is checkable rather than
+claimed.
+
+**A vote is final; a moderator strikes it.** `uq_vote_voter_submission` makes a second vote a `409`, so
+"changing your mind" is not a way to vote twice, and an organiser removes a vote by striking it — which
+keeps the row, records who struck it and why, and writes an audit entry. The headline tally counts **cast
+votes only, always**: a figure that changed depending on which request produced it would not be a tally.
+Struck votes are reported beside it (`struck_votes`) rather than mixed into it.
+
+**The tally is hidden until the window closes.** While the window is open, `/api/vote/results` answers `403`
+*with its reason* to anyone who is not an organiser — and the community window is its own clock, so an event
+can stop accepting work and still be taking votes. An organiser can always read the running figure, which is
+what makes "hidden" a check rather than a slogan: the acceptance reports assert the refusal from an
+anonymous caller and the publication after the close.
+
+**Comments belong to an identity too.** Signed-in users comment as themselves; everyone else needs a
+verified ballot address, and an unidentified caller is refused. The same words from the same identity twice
+in ten minutes are refused as a flood, moderation hides rather than deletes, an address is visible to the
+organiser (the moderator) and never in the public payload, and every write is rate-limited through a
+`throttle_events` table — in the database rather than in process memory, because a counter that lives in one
+worker silently stops applying the moment a deployment runs two.
+
+The interface is at **/vote** (the ballot), **/projects/{id}** (a project and its thread) and **/results**
+(the tally, or the reason there is not one yet).
+
+## Outbound and reproducible (T4)
+
+Four features that exist so an event can leave, be audited and be embedded — all of them with nothing to
+run and nothing external to call.
+
+**A signed webhook outbox.** Emitting an event inserts a delivery row in the *same transaction* as the thing
+that happened, so a receiver that is down can never turn a participant's successful submission into a 500.
+The envelope is built once and never rebuilt, which is what lets a retry carry the same `X-Axion-Delivery`
+id and the same bytes: a receiver can dedupe on the id and verify the signature without re-deriving the
+body. Signatures are `sha256=<hex>` over `'<timestamp>.<body>'` with the endpoint's own secret, the
+timestamp is inside the signed material so a captured delivery cannot be replayed forever, and
+`verify_signature()` ships in `app/webhooks.py` as the receiver's half so the scheme has exactly one
+implementation. Five attempts over ~70 minutes, then `dead` — a state, not a deletion — with replay from
+the console. `POST /api/admin/webhooks/dispatch` is the only thing that sends anything; there is no worker,
+on purpose, and the console shows the pending count rather than hiding it.
+
+**Signed participation records anyone can verify.** A record is a claim about a person or a team —
+*this judge filed fourteen verdicts*, *this team placed third* — signed with HMAC over the payload **as
+stored**, so verification is a comparison rather than a reconstruction and does not depend on how SQLite and
+Postgres each round-trip a timestamp. Judges' records carry the verdict count, the assigned coverage, the
+mean and the **effective σ** from the same `zscore` engine the leaderboard uses; teams' records carry their
+placement from that same ranking, duplicates excluded. Issuing is idempotent — a signed statement about a
+moment cannot be silently replaced — and revocation is a **dated fact beside the signature**, so a verifier
+sees both what was claimed and what the organiser later decided. The key is published once the event closes
+and not before: HMAC is symmetric, so whoever can verify can also forge, and publishing it while results
+still matter would let anyone mint "this team won". `/api/records/{code}` verifies,`/certificate` prints,
+`/api/records` reports counts and the key's state without naming anyone.
+
+**One bundle, in and out.** `GET /api/admin/bundle/export` returns the whole event as one JSON document with
+a `sha256` of its tables in a response header; two exports of an unchanged event are byte-identical, which
+is what makes the checksum worth quoting. Identities travel and **credentials never do** — no password hash,
+no session — because moving an event must not move the ability to sign in as anyone in it. The import is
+idempotent (every row is matched on the key it is identified by), **dry by default**, and refuses a bundle
+whole if it names a team it does not contain: half an event is worse than none.
+
+**A gallery that embeds anywhere.** `GET /api/embed/gallery` is a complete, self-contained HTML document
+for an `<iframe>` — no script tag, no font, no third-party asset — and `/gallery/snippet` generates the
+exact markup from the origin that served the request, so a sponsor's page cannot be pointed at the wrong
+host. Read-only in every direction: an embed is never an entry point into the event.
+
+All four are exercised end to end by the acceptance suites over HTTP, including a real outbound delivery
+whose receiver is this deployment's own route — chosen so the whole path is observable with the network off.
 
 ## Import a messy dataset
 
@@ -329,7 +441,7 @@ expected paths, so the claim cannot rot silently.
 run.py                    the organisers' acceptance checker, as published
 fixtures.json             the organisers' dataset, as published — what compose seeds
 acceptance-report.txt     their report, committed as printed
-acceptance-report.selfcheck.txt   Axion's own deeper check, twenty-one questions
+acceptance-report.selfcheck.txt   Axion's own deeper check, thirty-seven questions
 acceptance-report.axion.txt       the tier-by-tier suite, T0–T4 and the bonuses
 data/axion-fixtures.json  Axion's own generated dataset (the demo numbers)
 src/                      pointer: the code is api/ and web/ (see src/README.md)
@@ -342,11 +454,17 @@ api/                      FastAPI service — owns the database, all auth and al
   app/services.py         assignment, rubric weighting, event window
   app/fixture_dialects.py translates both fixture dialects into one canonical shape
   app/access.py           the four literal checker credentials, and the gate on them
-  app/routers/            auth, event, teams, submissions, judging, admin
-  scripts/selfcheck.toml  Axion's own deeper manifest (twenty-one checks, not theirs)
+  app/voting.py           community ballots, comment moderation rules, the hidden tally
+  app/throttle.py         rate limiting that is honest across workers
+  app/webhooks.py         the signed outbox: envelope, signature, retry policy
+  app/records.py          signed participation records and printable certificates
+  app/bundle.py           whole-event export and an idempotent, dry-by-default import
+  app/routers/            auth, event, teams, submissions, judging, community, admin,
+                          webhooks, records, bundle, embed, devtools
+  scripts/selfcheck.toml  Axion's own deeper manifest (thirty-seven checks, not theirs)
   scripts/dogfood_check.py  the checker that reads it
   scripts/acceptance.py   tier-by-tier acceptance runner
-  alembic/                migrations (0001 initial … 0006 partial uniqueness)
+  alembic/                migrations (0001 initial … 0008 webhooks and records)
   tests/                  pytest suite, including the math proofs and the seven checks
 web/                      Next.js App Router frontend (Tailwind + shadcn-style components)
 docker-compose.yml        db + api + web
@@ -430,8 +548,8 @@ There are **three report artefacts**, deliberately separate, and none overwrites
 | File | Produced by | What it is |
 | ---- | ----------- | ---------- |
 | `acceptance-report.txt` | **the organisers' `run.py`** reading [.dogfood.toml](./.dogfood.toml) | The receipt the brief asks for: seven checks, tier by tier, committed exactly as printed. This is the only one of the three anyone else ran. |
-| `acceptance-report.selfcheck.txt` | `api/scripts/dogfood_check.py` reading [api/scripts/selfcheck.toml](./api/scripts/selfcheck.toml) | Axion's own deeper check: the blind gate, all three CSV exports, the Z-score leaderboard and both sides of four role boundaries. |
-| `acceptance-report.axion.txt` | `api/scripts/acceptance.py` | The tier-by-tier suite (T0–T4 plus the bonus claims), which prints a SKIP with its reason wherever something cannot be observed in this environment |
+| `acceptance-report.selfcheck.txt` | `api/scripts/dogfood_check.py` reading [api/scripts/selfcheck.toml](./api/scripts/selfcheck.toml) | Axion's own deeper check, 37 checks against the fixture instance: the blind gate, all three CSV exports, the Z-score leaderboard, both sides of four role boundaries, the community ballot and its hidden tally, the webhook outbox, signed records, the bundle and the embed. It prints `claimed vs observed` for every tier and applies the same "a tier counts only if the tiers below it passed" rule their `run.py` does. |
+| `acceptance-report.axion.txt` | `api/scripts/acceptance.py` | The tier-by-tier suite (36 checks, T0–T4 plus the bonus claims) against the **demo** dataset, because half of it asks what only an *open* event can answer. It prints a SKIP with its reason wherever something cannot be observed, and a FAIL the run is expected to be clean of. |
 
 ## Continuous integration
 
@@ -524,8 +642,14 @@ cd api && python -m pytest tests/test_fixture_determinism.py -q        # two cle
   event refuses a write, isolation holds and the CSV exports; they prove nothing about the math, the schema
   or the interface. `api/scripts/selfcheck.toml` and the pytest suite are where the rest is asserted, and
   neither of those is evidence anyone else ran.
-- **T3 and T4 are not built, not merely unclaimed.** No community voting, no comments, no webhooks, no
-  certificates. The tier table above says so in the same words the manifest uses.
+- **No pairwise/Bradley-Terry mode, and no PDF certificates.** The requirement text supplied for pairwise is
+  truncated after its heading, so it is unimplemented rather than guessed at; certificates are self-contained
+  printable HTML rather than PDF, which keeps the artefact working with the network off and no PDF engine in
+  the image. Both are reported as `SKIP` with their reason, never as a pass.
+- **T4's outbox has no background worker, by design.** Deliveries are queued in the same transaction as the
+  thing that happened and flushed by `POST /api/admin/webhooks/dispatch`, which the console exposes as
+  *Dispatch now*. A deployment that never calls it accumulates visible pending deliveries. That is the
+  one-command rule applied to outbound calls: nothing to run, nothing to configure, nothing external.
 - **The demo dataset and the acceptance dataset are different files.** Every number in the demo section was
   computed against `data/axion-fixtures.json`; the report was produced against `fixtures.json`. They are not
   interchangeable, and confusing them is the easiest way to misread either one.

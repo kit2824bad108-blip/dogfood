@@ -33,8 +33,19 @@ APP_TABLES = {
     "score_criteria",
     "import_batches",
     "duplicate_reviews",
+    # T3: the community surface
+    "voters",
+    "votes",
+    "comments",
+    "throttle_events",
+    # T4: the outbound outbox and signed records
+    "webhook_endpoints",
+    "webhook_deliveries",
+    "participation_records",
 }
 EXPECTED_CHAIN = [
+    "0008_webhooks_and_records",
+    "0007_community_surface",
     "0006_imported_reality_is_partial",
     "0005_audit_actor_is_historical",
     "0004_integrity_constraints",

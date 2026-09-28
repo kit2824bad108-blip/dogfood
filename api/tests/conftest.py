@@ -145,6 +145,28 @@ def utc(*args) -> datetime:
 
 
 @pytest.fixture()
+def voting_closed(monkeypatch):
+    """Move the *community* window into the past, leaving submissions open.
+
+    The voting window is its own clock (see `app/voting.py`), so closing it must
+    not close the event: these two tests would otherwise prove nothing about the
+    "results are hidden until voting closes" rule, because every write in the
+    event would be refused for an unrelated reason.
+    """
+    from dataclasses import replace
+
+    from app import config, voting
+
+    expired = replace(
+        config.settings,
+        voting_start=_NOW - timedelta(hours=48),
+        voting_end=_NOW - timedelta(hours=1),
+    )
+    monkeypatch.setattr(voting, "settings", expired)
+    return expired
+
+
+@pytest.fixture()
 def closed_window(monkeypatch):
     """Move the event window into the past for the routers that read settings.
 

@@ -12,14 +12,14 @@ the root `.dogfood.toml` (seven checks, the same program for every team). What
 follows is Axion's own deeper check, against the same running instance, and every
 line is an observation of that instance rather than a claim about it.
 
-Generated     : 2026-09-28T09:34:37.088694+00:00
-Target        : http://127.0.0.1:8000
+Generated     : 2026-09-28T12:05:12.449329+00:00
+Target        : http://localhost:3000
 Manifest      : api\scripts\selfcheck.toml (axion-self-check v1)
 Dataset       : fixtures.json — declared 41 submissions, 30 judges
 Auth          : headers mode, credentials from /api/dev/checker-headers
-Git commit    : 5a51f27
+Git commit    : 15e2406
 Python        : 3.12.10 on Windows
-Checks        : 21 total — 21 passed, 0 failed, 0 skipped
+Checks        : 37 total — 37 passed, 0 failed, 0 skipped
 
 The only write this check ever attempts is the closed-event submission probe,
 and it is skipped rather than attempted when the event is open, so a read-only
@@ -29,99 +29,170 @@ run cannot mutate the instance it is measuring.
 T0 — the runtime answers
 ------------------------------------------------------------------------------
 
-[PASS] Health endpoint answers  (2 ms)
+[PASS] Health endpoint answers  (43 ms)
        status ok; event 'Sample Hack 2026'; window closed (2026-02-26T18:00:00+00:00 → 2026-03-01T18:00:00+00:00); dev login True; commit integrity from mock
-[PASS] OpenAPI schema is served  (24 ms)
-       44 documented paths, OpenAPI 3.1.0, title 'Axion API'
-[PASS] Interactive API docs are served  (2 ms)
+[PASS] OpenAPI schema is served  (32 ms)
+       76 documented paths, OpenAPI 3.1.0, title 'Axion API'
+[PASS] Interactive API docs are served  (21 ms)
        Swagger UI served at /api/docs (937 bytes of HTML)
 
 ------------------------------------------------------------------------------
 T1 — public surface and the deadline
 ------------------------------------------------------------------------------
 
-[PASS] Public event configuration  (16 ms)
+[PASS] Public event configuration  (36 ms)
        phase closed; window 2026-02-26T18:00:00+00:00 → 2026-03-01T18:00:00+00:00; 8 tracks; rubric Functionality 33.33%, Quality 33.33%, Innovation 33.33%; stats {'teams': 40, 'submissions': 41, 'drafts': 0, 'judges': 30, 'verdicts': 126, 'assignments': 199}
-[PASS] Public gallery lists projects  (8 ms)
+[PASS] Public gallery lists projects  (19 ms)
        40 projects, 8 tracks; ['demo_url', 'video_url'] withheld from anonymous callers
-[PASS] Gallery search returns matches  (10 ms)
+[PASS] Gallery search returns matches  (14 ms)
        q='dry' matched 4 projects (≥3 declared): Dry Compass, Dry Harbour, Dry Bridge
-[PASS] Closed event rejects submissions  (21 ms)
+[PASS] Closed event rejects submissions  (100 ms)
        403 on a live write attempt while the window is closed: 'The submission window is closed — no further edits are accepted'
 
 ------------------------------------------------------------------------------
 T2 — judging, exports and the blind gate
 ------------------------------------------------------------------------------
 
-[PASS] Judge sees their assignments  (11 ms)
+[PASS] Judge sees their assignments  (41 ms)
        6 assignments; technical 1/6 filed (16.7%); rubric 'Imported rubric — functionality, quality, innovation' with 3 weighted criteria
-[PASS] Technical view withholds presentation links  (20 ms)
+[PASS] Technical view withholds presentation links  (71 ms)
        'Small Meadow': repo and docs visible, demo/video links absent from the payload, presentation_unlocked=False
-[PASS] A judge cannot read a peer's scores  (6 ms)
+[PASS] A judge cannot read a peer's scores  (28 ms)
        403 from /api/judging/judges/jdg_01/scores
-[PASS] A judge can read their own scores  (12 ms)
+[PASS] A judge can read their own scores  (55 ms)
        200 from /api/judging/scores
-[PASS] Presentation stays locked until the technical verdict exists  (20 ms)
+[PASS] Presentation stays locked until the technical verdict exists  (63 ms)
        403 before this judge filed a technical verdict: 'Submit the technical evaluation before the presentation is unlocked' — enforced by the API, not by the browser
-[PASS] Z-score leaderboard ranks every project  (26 ms)
+[PASS] Z-score leaderboard ranks every project  (41 ms)
        40 ranked projects; leader 'Still Beacon' at 62.47 (raw average 4.5, movement 0); 122 technical verdicts; 0 coverage warnings
-[PASS] Leaderboard CSV export  (22 ms)
+[PASS] Leaderboard CSV export  (36 ms)
        40 data rows, 15 columns: rank, submission_id, project, team, track, repo_url…
-[PASS] Scores CSV export  (23 ms)
+[PASS] Scores CSV export  (60 ms)
        126 data rows, 17 columns: submission_id, project, team, track, judge_id, judge_name…
-[PASS] Judging progress CSV export  (71 ms)
+[PASS] Judging progress CSV export  (172 ms)
        30 data rows, 9 columns: judge_id, judge, email, assigned, technical_done, technical_pending…
+
+------------------------------------------------------------------------------
+T3 — community voting, comments and the hidden tally
+------------------------------------------------------------------------------
+
+[PASS] The community window is published, and its phase is reported  (40 ms)
+       community voting is closed; 2026-02-26T18:00:00+00:00 → 2026-03-04T18:00:00+00:00; results published
+[PASS] A ballot is not readable without a token  (41 ms)
+       401 with no ballot token: a ballot is not readable by anyone who has not asked for one
+[PASS] The tally is published once the window closes, and refused with a reason before  (46 ms)
+       window closed, tally published: 0 projects, The window has closed.
+[PASS] An unverified address is refused before a ballot exists  (26 ms)
+       422 for an address that is not one: the door is a verified email, and an unverified one never reaches a ballot
+[PASS] Project comment threads are public  (101 ms)
+       comment thread readable without credentials: 0 visible, author addresses withheld from a non-organiser
+
+------------------------------------------------------------------------------
+T4 — webhooks, signed records, the bundle and the embed
+------------------------------------------------------------------------------
+
+[PASS] The webhook outbox is managed from the console  (62 ms)
+       0 receivers, 10 events in the catalogue, queue {'pending': 0, 'delivered': 0, 'failed': 0, 'dead': 0}; signed with X-Axion-Signature (sha256=<hex> over '<timestamp>.<body>' with the endpoint secret); 5 attempts, worker: none — POST /api/admin/webhooks/dispatch flushes the queue
+[PASS] A participant cannot manage webhook receivers  (34 ms)
+       403 from /api/admin/webhooks
+[PASS] Anonymous callers cannot read the webhook queue  (33 ms)
+       401 from /api/admin/webhooks
+[PASS] The whole event exports as one signed, credential-free bundle  (820 ms)
+       v1 bundle, sha256 4d020ad0b44b312c…, 40 teams / 41 submissions / 126 verdicts, no credential in the document
+[PASS] A participant cannot export the event  (39 ms)
+       403 from /api/admin/bundle/export
+[PASS] An unusable bundle is refused whole, by name  (26 ms)
+       refused whole with 2 named problem(s): bundle_version 0 is not 1
+[PASS] The deployment states what it can prove, and with which key  (11 ms)
+       0 records issued (0 revoked); key hmac-sha256 df506c8d8cd83d1a published: The event window is closed, so the key is published and anyone can verify a record without asking this deployment.
+[PASS] A code this deployment never issued does not verify  (17 ms)
+       404 for a code this deployment never issued: verification answers about this deployment, it does not guess
+[PASS] A participant cannot issue records  (39 ms)
+       403 from /api/admin/records/issue
+[PASS] The gallery embeds as a self-contained document  (67 ms)
+       self-contained, iframe-ready gallery: 24 project cards, no third-party asset
+[PASS] The paste-ready embed snippet is generated, not hard-coded  (16 ms)
+       paste-ready: http://localhost:3000/api/embed/gallery?limit=24&theme=light
 
 ------------------------------------------------------------------------------
 AUTH — authenticated boundaries
 ------------------------------------------------------------------------------
 
-[PASS] Organizer header authenticates as an admin  (5 ms)
+[PASS] Organizer header authenticates as an admin  (36 ms)
        a header alone authenticates as organiser@sample-hack-2026.dogfood (admin), with no login round-trip
-[PASS] Participant reaches their own submission surface  (9 ms)
+[PASS] Participant reaches their own submission surface  (23 ms)
        200 from /api/submissions/me
-[PASS] Participant cannot read the organizer leaderboard  (4 ms)
+[PASS] Participant cannot read the organizer leaderboard  (34 ms)
        403 for a participant on an organizer-only route
-[PASS] Anonymous request cannot read the organizer leaderboard  (2 ms)
+[PASS] Anonymous request cannot read the organizer leaderboard  (47 ms)
        401 with no credentials at all
 
 ------------------------------------------------------------------------------
 DATASET — the instance runs the declared dataset
 ------------------------------------------------------------------------------
 
-[PASS] Instance is running the declared dataset  (11 ms)
+[PASS] Instance is running the declared dataset  (54 ms)
        declared fixtures.json → observed submissions=41, judges=30, teams=40, verdicts=126, assignments=199
 
 ==============================================================================
 SUMMARY
 ==============================================================================
 
-T0       PASS  Health endpoint answers                                        status ok; event 'Sample Hack 2026'; window closed (2026-02-26T18:00:00+00:00 → 2026-03-01T18:00:00+00:00); dev login True; commit integrity from mock
-T0       PASS  OpenAPI schema is served                                       44 documented paths, OpenAPI 3.1.0, title 'Axion API'
-T0       PASS  Interactive API docs are served                                Swagger UI served at /api/docs (937 bytes of HTML)
-T1       PASS  Public event configuration                                     phase closed; window 2026-02-26T18:00:00+00:00 → 2026-03-01T18:00:00+00:00; 8 tracks; rubric Functionality 33.33%, Quality 33.33%, Innovation 33.33%; stats {'teams': 40, 'submissions': 41, 'drafts': 0, 'judges': 30, 'verdicts': 126, 'assignments': 199}
-T1       PASS  Public gallery lists projects                                  40 projects, 8 tracks; ['demo_url', 'video_url'] withheld from anonymous callers
-T1       PASS  Gallery search returns matches                                 q='dry' matched 4 projects (≥3 declared): Dry Compass, Dry Harbour, Dry Bridge
-T1       PASS  Closed event rejects submissions                               403 on a live write attempt while the window is closed: 'The submission window is closed — no further edits are accepted'
-T2       PASS  Judge sees their assignments                                   6 assignments; technical 1/6 filed (16.7%); rubric 'Imported rubric — functionality, quality, innovation' with 3 weighted criteria
-T2       PASS  Technical view withholds presentation links                    'Small Meadow': repo and docs visible, demo/video links absent from the payload, presentation_unlocked=False
-T2       PASS  A judge cannot read a peer's scores                            403 from /api/judging/judges/jdg_01/scores
-T2       PASS  A judge can read their own scores                              200 from /api/judging/scores
-T2       PASS  Presentation stays locked until the technical verdict exists   403 before this judge filed a technical verdict: 'Submit the technical evaluation before the presentation is unlocked' — enforced by the API, not by the browser
-T2       PASS  Z-score leaderboard ranks every project                        40 ranked projects; leader 'Still Beacon' at 62.47 (raw average 4.5, movement 0); 122 technical verdicts; 0 coverage warnings
-T2       PASS  Leaderboard CSV export                                         40 data rows, 15 columns: rank, submission_id, project, team, track, repo_url…
-T2       PASS  Scores CSV export                                              126 data rows, 17 columns: submission_id, project, team, track, judge_id, judge_name…
-T2       PASS  Judging progress CSV export                                    30 data rows, 9 columns: judge_id, judge, email, assigned, technical_done, technical_pending…
-AUTH     PASS  Organizer header authenticates as an admin                     a header alone authenticates as organiser@sample-hack-2026.dogfood (admin), with no login round-trip
-AUTH     PASS  Participant reaches their own submission surface               200 from /api/submissions/me
-AUTH     PASS  Participant cannot read the organizer leaderboard              403 for a participant on an organizer-only route
-AUTH     PASS  Anonymous request cannot read the organizer leaderboard        401 with no credentials at all
-DATASET  PASS  Instance is running the declared dataset                       declared fixtures.json → observed submissions=41, judges=30, teams=40, verdicts=126, assignments=199
+T0       PASS  Health endpoint answers                                                           status ok; event 'Sample Hack 2026'; window closed (2026-02-26T18:00:00+00:00 → 2026-03-01T18:00:00+00:00); dev login True; commit integrity from mock
+T0       PASS  OpenAPI schema is served                                                          76 documented paths, OpenAPI 3.1.0, title 'Axion API'
+T0       PASS  Interactive API docs are served                                                   Swagger UI served at /api/docs (937 bytes of HTML)
+T1       PASS  Public event configuration                                                        phase closed; window 2026-02-26T18:00:00+00:00 → 2026-03-01T18:00:00+00:00; 8 tracks; rubric Functionality 33.33%, Quality 33.33%, Innovation 33.33%; stats {'teams': 40, 'submissions': 41, 'drafts': 0, 'judges': 30, 'verdicts': 126, 'assignments': 199}
+T1       PASS  Public gallery lists projects                                                     40 projects, 8 tracks; ['demo_url', 'video_url'] withheld from anonymous callers
+T1       PASS  Gallery search returns matches                                                    q='dry' matched 4 projects (≥3 declared): Dry Compass, Dry Harbour, Dry Bridge
+T1       PASS  Closed event rejects submissions                                                  403 on a live write attempt while the window is closed: 'The submission window is closed — no further edits are accepted'
+T2       PASS  Judge sees their assignments                                                      6 assignments; technical 1/6 filed (16.7%); rubric 'Imported rubric — functionality, quality, innovation' with 3 weighted criteria
+T2       PASS  Technical view withholds presentation links                                       'Small Meadow': repo and docs visible, demo/video links absent from the payload, presentation_unlocked=False
+T2       PASS  A judge cannot read a peer's scores                                               403 from /api/judging/judges/jdg_01/scores
+T2       PASS  A judge can read their own scores                                                 200 from /api/judging/scores
+T2       PASS  Presentation stays locked until the technical verdict exists                      403 before this judge filed a technical verdict: 'Submit the technical evaluation before the presentation is unlocked' — enforced by the API, not by the browser
+T2       PASS  Z-score leaderboard ranks every project                                           40 ranked projects; leader 'Still Beacon' at 62.47 (raw average 4.5, movement 0); 122 technical verdicts; 0 coverage warnings
+T2       PASS  Leaderboard CSV export                                                            40 data rows, 15 columns: rank, submission_id, project, team, track, repo_url…
+T2       PASS  Scores CSV export                                                                 126 data rows, 17 columns: submission_id, project, team, track, judge_id, judge_name…
+T2       PASS  Judging progress CSV export                                                       30 data rows, 9 columns: judge_id, judge, email, assigned, technical_done, technical_pending…
+T3       PASS  The community window is published, and its phase is reported                      community voting is closed; 2026-02-26T18:00:00+00:00 → 2026-03-04T18:00:00+00:00; results published
+T3       PASS  A ballot is not readable without a token                                          401 with no ballot token: a ballot is not readable by anyone who has not asked for one
+T3       PASS  The tally is published once the window closes, and refused with a reason before   window closed, tally published: 0 projects, The window has closed.
+T3       PASS  An unverified address is refused before a ballot exists                           422 for an address that is not one: the door is a verified email, and an unverified one never reaches a ballot
+T3       PASS  Project comment threads are public                                                comment thread readable without credentials: 0 visible, author addresses withheld from a non-organiser
+T4       PASS  The webhook outbox is managed from the console                                    0 receivers, 10 events in the catalogue, queue {'pending': 0, 'delivered': 0, 'failed': 0, 'dead': 0}; signed with X-Axion-Signature (sha256=<hex> over '<timestamp>.<body>' with the endpoint secret); 5 attempts, worker: none — POST /api/admin/webhooks/dispatch flushes the queue
+T4       PASS  A participant cannot manage webhook receivers                                     403 from /api/admin/webhooks
+T4       PASS  Anonymous callers cannot read the webhook queue                                   401 from /api/admin/webhooks
+T4       PASS  The whole event exports as one signed, credential-free bundle                     v1 bundle, sha256 4d020ad0b44b312c…, 40 teams / 41 submissions / 126 verdicts, no credential in the document
+T4       PASS  A participant cannot export the event                                             403 from /api/admin/bundle/export
+T4       PASS  An unusable bundle is refused whole, by name                                      refused whole with 2 named problem(s): bundle_version 0 is not 1
+T4       PASS  The deployment states what it can prove, and with which key                       0 records issued (0 revoked); key hmac-sha256 df506c8d8cd83d1a published: The event window is closed, so the key is published and anyone can verify a record without asking this deployment.
+T4       PASS  A code this deployment never issued does not verify                               404 for a code this deployment never issued: verification answers about this deployment, it does not guess
+T4       PASS  A participant cannot issue records                                                403 from /api/admin/records/issue
+T4       PASS  The gallery embeds as a self-contained document                                   self-contained, iframe-ready gallery: 24 project cards, no third-party asset
+T4       PASS  The paste-ready embed snippet is generated, not hard-coded                        paste-ready: http://localhost:3000/api/embed/gallery?limit=24&theme=light
+AUTH     PASS  Organizer header authenticates as an admin                                        a header alone authenticates as organiser@sample-hack-2026.dogfood (admin), with no login round-trip
+AUTH     PASS  Participant reaches their own submission surface                                  200 from /api/submissions/me
+AUTH     PASS  Participant cannot read the organizer leaderboard                                 403 for a participant on an organizer-only route
+AUTH     PASS  Anonymous request cannot read the organizer leaderboard                           401 with no credentials at all
+DATASET  PASS  Instance is running the declared dataset                                          declared fixtures.json → observed submissions=41, judges=30, teams=40, verdicts=126, assignments=199
 
-21 passed, 0 failed, 0 skipped (21 checks)
+37 passed, 0 failed, 0 skipped (37 checks)
 
 SKIP is not PASS: a skipped check states why it could not be observed. The
 automated pytest suite covers the same paths in-process (api/tests).
+
+------------------------------------------------------------------------------
+CLAIMED TIERS vs OBSERVED
+------------------------------------------------------------------------------
+
+T1   claimed      verified                               4/4 checks passed
+T2   claimed      verified                               9/9 checks passed
+T3   claimed      verified                               5/5 checks passed
+T4   claimed      verified                               11/11 checks passed
+
+Solid: T1, T2, T3, T4
+Bonuses claimed: normalization-proof, api-first, threat-model, one-command
+T1–T4 are claimed; README.md carries the same table, and every claim there names the surface that proves it.
 
 RESULT: ALL EXECUTED CHECKS PASSED
 

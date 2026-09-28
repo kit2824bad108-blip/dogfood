@@ -3,12 +3,13 @@
 #
 # This is NOT the DOGFOOD acceptance manifest. The organisers' manifest is at the
 # repository root (`.dogfood.toml`, read by their `run.py`, seven checks) and that
-# file is the one their suite reads. This one asks twenty-one questions instead of
-# seven — the blind gate, the exports, the Z-score leaderboard, anonymous
-# boundaries — because a project should be able to check more than it is graded on.
+# file is the one their suite reads. This one asks thirty-eight questions instead of
+# seven — the blind gate, the exports, the Z-score leaderboard, the community
+# surface, the webhook outbox, signed records, the bundle, anonymous boundaries —
+# because a project should be able to check more than it is graded on.
 #
 # Do not merge the two. A claim verified only by its author is not evidence, and
-# folding twenty-one of our own assertions into the artefact the organisers read
+# folding thirty-eight of our own assertions into the artefact the organisers read
 # would blur exactly that line.
 #
 #   python api/scripts/dogfood_check.py api/scripts/selfcheck.toml \
@@ -202,6 +203,167 @@ path = "/api/admin/leaderboard"
 role = "organizer"
 expect = 200
 
+# ── T3 — the community surface ───────────────────────────────────────────────
+
+[[checks]]
+id = "vote_window"
+group = "T3"
+name = "The community window is published, and its phase is reported"
+method = "GET"
+path = "/api/event"
+role = "public"
+expect = 200
+
+# No token, no ballot. The token is what proves an address, so an unverified
+# caller has nothing to read rather than a ballot with no name on it.
+[[checks]]
+id = "vote_ballot_needs_a_token"
+group = "T3"
+name = "A ballot is not readable without a token"
+method = "GET"
+path = "/api/vote/ballot"
+role = "public"
+expect = 401
+
+# Either answer is correct, and both are observations: while the window is open
+# the tally is refused *with its reason*, and once it closes the tally is public.
+# Neither is a partial total, which is the thing the rule actually forbids.
+[[checks]]
+id = "vote_results_gating"
+group = "T3"
+name = "The tally is published once the window closes, and refused with a reason before"
+method = "GET"
+path = "/api/vote/results"
+role = "public"
+expect = [200, 403]
+
+# An address that is not one never reaches a ballot. This is the only write-
+# shaped T3 probe, and it is refused before anything is stored.
+[[checks]]
+id = "vote_register_validates"
+group = "T3"
+name = "An unverified address is refused before a ballot exists"
+method = "POST"
+path = "/api/vote/register"
+role = "public"
+expect = 422
+body = { email = "not-an-address", name = "Checker probe" }
+
+[[checks]]
+id = "comments_public"
+group = "T3"
+name = "Project comment threads are public"
+method = "GET"
+path = "/api/submissions/{submission_id}/comments"
+role = "public"
+expect = 200
+
+# ── T4 — outbound webhooks, signed records, the bundle and the embed ─────────
+
+[[checks]]
+id = "webhooks_console"
+group = "T4"
+name = "The webhook outbox is managed from the console"
+method = "GET"
+path = "/api/admin/webhooks"
+role = "organizer"
+expect = 200
+
+[[checks]]
+id = "webhooks_denied"
+group = "T4"
+name = "A participant cannot manage webhook receivers"
+method = "GET"
+path = "/api/admin/webhooks"
+role = "participant"
+expect = 403
+
+[[checks]]
+id = "webhooks_anonymous"
+group = "T4"
+name = "Anonymous callers cannot read the webhook queue"
+method = "GET"
+path = "/api/admin/webhooks"
+role = "public"
+expect = 401
+
+[[checks]]
+id = "bundle_export"
+group = "T4"
+name = "The whole event exports as one signed, credential-free bundle"
+method = "GET"
+path = "/api/admin/bundle/export"
+role = "organizer"
+expect = 200
+
+[[checks]]
+id = "bundle_export_denied"
+group = "T4"
+name = "A participant cannot export the event"
+method = "GET"
+path = "/api/admin/bundle/export"
+role = "participant"
+expect = 403
+
+# An empty bundle is not a valid one: the import refuses it by name, whole, and
+# writes nothing. `mode` is absent deliberately — the default is the dry run.
+[[checks]]
+id = "bundle_validate"
+group = "T4"
+name = "An unusable bundle is refused whole, by name"
+method = "POST"
+path = "/api/admin/bundle/validate"
+role = "organizer"
+expect = 200
+body = { bundle = { bundle_version = 0 } }
+
+[[checks]]
+id = "records_overview"
+group = "T4"
+name = "The deployment states what it can prove, and with which key"
+method = "GET"
+path = "/api/records"
+role = "public"
+expect = 200
+
+[[checks]]
+id = "records_missing_code"
+group = "T4"
+name = "A code this deployment never issued does not verify"
+method = "GET"
+path = "/api/records/AXN-0000-0000"
+role = "public"
+expect = 404
+
+[[checks]]
+id = "records_issue_denied"
+group = "T4"
+name = "A participant cannot issue records"
+method = "POST"
+path = "/api/admin/records/issue"
+role = "participant"
+expect = 403
+body = { judges = false, teams = false, winners = 0 }
+
+[[checks]]
+id = "embed_gallery"
+group = "T4"
+name = "The gallery embeds as a self-contained document"
+method = "GET"
+path = "/api/embed/gallery"
+role = "public"
+expect = 200
+expect_content_type = "text/html"
+
+[[checks]]
+id = "embed_snippet"
+group = "T4"
+name = "The paste-ready embed snippet is generated, not hard-coded"
+method = "GET"
+path = "/api/embed/gallery/snippet"
+role = "public"
+expect = 200
+
 # ── Exports: the artefact an organiser actually needs ────────────────────────
 
 [[checks]]
@@ -272,8 +434,11 @@ path = "/api/admin/leaderboard"
 role = "public"
 expect = 401
 
+# The ladder this deployment claims, checked against what was observed above. A
+# tier counts only when every check in its group passed *and* every tier below it
+# did, so a claim here can never be more generous than the evidence under it.
 [[claims]]
-tiers = ["T1", "T2"]
-not_claimed = ["T3", "T4"]
-bonuses = ["normalization-proof", "api-first", "threat-model"]
-note = "T3 and T4 are not claimed and are documented as such in README.md."
+tiers = ["T1", "T2", "T3", "T4"]
+not_claimed = []
+bonuses = ["normalization-proof", "api-first", "threat-model", "one-command"]
+note = "T1–T4 are claimed; README.md carries the same table, and every claim there names the surface that proves it."

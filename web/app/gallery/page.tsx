@@ -161,7 +161,17 @@ export default function GalleryPage() {
           <Card key={project.id} className="flex flex-col">
             <CardHeader>
               <div className="flex items-start justify-between gap-3">
-                <CardTitle className="leading-snug">{project.title}</CardTitle>
+                {/* The card title is the link into the project, where the comment
+                    thread lives. A project with a conversation about it should be
+                    reachable from the page that lists it. */}
+                <CardTitle className="leading-snug">
+                  <Link
+                    href={`/projects/${project.id}`}
+                    className="underline-offset-4 hover:underline"
+                  >
+                    {project.title}
+                  </Link>
+                </CardTitle>
                 {project.track && (
                   <Badge variant="secondary" className="shrink-0">
                     {project.track.name}

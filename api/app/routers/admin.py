@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from .. import archive, audit, zscore
+from .. import archive, audit, webhooks, zscore
 from ..config import settings
 from ..db import get_db
 from ..deps import client_ip, require_role
@@ -31,9 +31,11 @@ from ..timeutil import iso
 from ..services import (
     active_rubric,
     assign_submission_to_new_judge,
+    canonical_only,
     normalized_criteria,
     overall_prizes,
     score_counts,
+    score_records,
     tracks_with_prizes,
 )
 from .submissions import serialize_submission
@@ -51,8 +53,12 @@ def _canonical_only(statement):
     from the ranking and counted in `duplicates_excluded` so the exclusion is
     visible rather than silent; the organiser sees the pair on the duplicates
     screen and decides.
+
+    The predicate itself lives in `services.canonical_only`, because the signed
+    participation records have to exclude the same rows; this is the local name the
+    console has always used for it.
     """
-    return statement.where(Submission.duplicate_of_submission_id.is_(None))
+    return canonical_only(statement)
 
 
 def duplicates_excluded(db: Session) -> int:
@@ -64,14 +70,9 @@ def duplicates_excluded(db: Session) -> int:
 
 
 def _records(db: Session) -> list[zscore.ScoreRecord]:
-    rows = db.execute(
-        _canonical_only(
-            select(Score.judge_id, Score.submission_id, Score.technical_score)
-            .join(Submission, Submission.id == Score.submission_id)
-            .where(Score.technical_score.isnot(None))
-        )
-    ).all()
-    return [zscore.ScoreRecord(judge_id=j, submission_id=s, score=float(t)) for j, s, t in rows]
+    """The ranking input. Defined once in `services`, so the signed participation
+    records and this console cannot rank different sets of verdicts."""
+    return score_records(db)
 
 
 def _title_map(db: Session) -> dict[int, dict]:
@@ -321,6 +322,16 @@ def make_archive(
         entity="event",
         ip=client_ip(request),
         details={"bundle_version": bundle["bundle_version"], "results": len(bundle["results"])},
+    )
+    webhooks.emit(
+        db,
+        webhooks.EVENT_EVENT_ARCHIVED,
+        {
+            "event": settings.event_name,
+            "bundle_version": bundle["bundle_version"],
+            "results": len(bundle["results"]),
+            "archived_by": user.email,
+        },
     )
     db.commit()
 

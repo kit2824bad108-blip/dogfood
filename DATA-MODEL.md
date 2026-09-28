@@ -1,11 +1,11 @@
 # Axion data model
 
-Postgres 16 in production (SQLite in the test suite), one schema, eleven tables, one Alembic migration
-chain. Everything the engine decides — who judged what, what they said, and what changed afterwards — is a
-row somewhere in this document.
+Postgres 16 in production (SQLite in the test suite), one schema, eighteen tables, one Alembic migration
+chain. Everything the engine decides — who judged what, what they said, who voted, what the deployment
+told a subscriber, and what changed afterwards — is a row somewhere in this document.
 
 - Source of truth: `api/app/models.py` (SQLAlchemy 2 typed mappings)
-- Migrations: `api/alembic/versions/0001_initial.py`, `api/alembic/versions/0002_event_and_rubrics.py`
+- Migrations: `api/alembic/versions/0001_initial.py` … `0008_webhooks_and_records.py`
 - Connection: `api/app/db.py`
 
 ## Design rules
@@ -145,6 +145,84 @@ erDiagram
         json details
         datetime created_at
     }
+    VOTERS {
+        int id PK
+        string email UK
+        string display_name
+        string token_hash UK "sha256 of the ballot token"
+        datetime verified_at "set by following the link"
+        bool blocked
+        text blocked_reason
+        datetime created_at
+        datetime updated_at
+    }
+    VOTES {
+        int id PK
+        int voter_id FK "voters.id, CASCADE"
+        int submission_id FK "submissions.id, CASCADE"
+        int score "1-5"
+        string status "cast|struck"
+        datetime cast_at
+        datetime struck_at
+        string struck_by "denormalised, like the audit actor"
+        text struck_reason
+    }
+    COMMENTS {
+        int id PK
+        int submission_id FK "submissions.id, CASCADE"
+        int author_id FK "users.id, SET NULL"
+        int voter_id FK "voters.id, SET NULL"
+        string author_name
+        string author_email
+        text body
+        string status "visible|hidden"
+        datetime created_at
+    }
+    THROTTLE_EVENTS {
+        int id PK
+        string bucket
+        string key
+        int at_epoch
+    }
+    WEBHOOK_ENDPOINTS {
+        int id PK
+        string url
+        string secret "signs every delivery to this endpoint"
+        json events "empty = everything"
+        bool active
+        int failure_count
+        datetime last_delivered_at
+        datetime last_failed_at
+    }
+    WEBHOOK_DELIVERIES {
+        int id PK
+        int endpoint_id FK "webhook_endpoints.id, CASCADE"
+        string event
+        json payload "the envelope, stored as sent"
+        string status "pending|delivered|failed|dead"
+        int attempts
+        int response_status
+        text error
+        datetime next_attempt_at
+        string signature "sha256 over the stored bytes"
+        datetime created_at
+        datetime delivered_at
+    }
+    PARTICIPATION_RECORDS {
+        int id PK
+        string code UK "public handle, inside the signed payload"
+        string subject_kind "judge|participant|team"
+        string subject_name
+        string subject_email
+        string event_name
+        string role
+        json payload "stored verbatim; the signature is over these bytes"
+        string signature
+        string algorithm "hmac-sha256"
+        datetime issued_at
+        datetime revoked_at "a fact beside the signature, not an edit"
+        text revoked_reason
+    }
 ```
 
 The same model as plain text, for anyone reading this without Mermaid:
@@ -158,7 +236,19 @@ users ─┬─< team_members >─┬─ teams ──1:1── submissions ─�
        ├──< assignments (judge_id)                    ├── rubric_id ──> rubrics
        │                                              └──< score_criteria
        └──< audit_logs (actor_id)
+
+submissions ──< votes >── voters          (T3: one vote per address per project)
+submissions ──< comments >──┬─ users      (T3: an author, or a voter, or neither)
+                            └─ voters
+webhook_endpoints ──< webhook_deliveries  (T4: an outbox row per event per endpoint)
+participation_records                     (T4: signed, self-contained; no foreign keys at all)
+throttle_events                           (T3: rate limiting that holds across workers)
 ```
+
+The T4 record table deliberately references nothing. A record is a claim about a *moment* — `subject_ref` is
+the identifier the subject had in the system it came from, not a live pointer — so a foreign key to `users`
+or `teams` would make the claim falsifiable by deleting a row. That is the same reasoning the audit trail
+uses for `actor_id`, applied to the artefact a participant actually walks away with.
 
 ## Tables
 
@@ -308,6 +398,61 @@ Unique on `(submission_id, duplicate_of_submission_id)`, so re-deciding updates 
 confirmed duplicate is **flagged, never deleted**: removing a participant's work on the strength of a string
 comparison is not a decision software should make.
 
+### `voters`, `votes` and `comments` (T3)
+
+**A voter is not a user.** The community surface is email-gated rather than account-based, so it has its own
+subject table: an address, a display name, and a **SHA-256 digest** of the ballot token. The digest is what
+is stored because the database must not be readable into a live ballot — the same reasoning that keeps
+session cookies out of reach. `verified_at` is set by following the link, and `blocked`/`blocked_reason` are
+an organiser's decision, which is why they are columns rather than deletions.
+
+`votes` is deliberately narrow. `uq_vote_voter_submission` makes a second vote an *error*, so "changing your
+mind" is not a way to vote twice; `status` is `cast` or `struck`, and striking keeps the row with `struck_at`,
+`struck_by` and `struck_reason`. Nothing here can be updated into a different vote — the only permitted
+change is an organiser removing one, and that leaves both the vote and the reason visible. `ip` and
+`user_agent` are recorded for abuse review, not for identity.
+
+`comments` has two possible authors and neither is required: `author_id` (a signed-in user) and `voter_id`
+(a verified ballot) are both nullable and both `ON DELETE SET NULL`, so an account deletion does not destroy
+a thread. `author_name` and `author_email` are denormalised for the same reason the audit trail denormalises
+its actor: the comment must survive the account it came from. `status` is `visible`/`hidden` and nothing is
+ever deleted by moderation.
+
+### `throttle_events` (T3)
+
+One row per attempt: `bucket` (`vote.cast`, `comment.create`, …), `key` (a voter, an address, an IP) and
+`at_epoch`. A rate limiter that lives in process memory silently stops applying the moment a deployment runs
+more than one worker, which is exactly when it starts to matter, so the counter is a table. The
+`(bucket, key, at_epoch)` index is what makes the window query cheap.
+
+### `webhook_endpoints` and `webhook_deliveries` (T4)
+
+An endpoint is a URL, a description, a **signing secret** and a subscription list (`events` empty means
+everything). The secret is stored because delivery must be signed: a receiver has to be able to tell a call
+from this deployment apart from anyone else who learned the URL. `failure_count` resets on a successful
+delivery, so it means "currently failing" rather than "has ever failed".
+
+A delivery is an **outbox row, not a log line**. `payload` holds the exact envelope as built at emit time and
+`signature` the signature computed over it, so a retry is byte-identical to the first attempt — which is what
+lets a receiver dedupe on the delivery id and verify the signature without re-deriving the body. `status`
+walks `pending` → `delivered`, or `pending` → `dead` after the retry budget is spent; `dead` is a state, so
+what was lost is visible and replayable rather than gone. `next_attempt_at` carries the backoff.
+
+### `participation_records` (T4)
+
+A self-contained, signed attestation about one person or team. The attested `summary`, the event name, the
+signer, the algorithm and the key fingerprint all live **inside** the signed `payload`, which is stored
+verbatim: verification is a comparison against those bytes, not a reconstruction from columns. That
+distinction matters because rebuilding a payload would make the signature depend on how a backend
+round-trips a timestamp, and the failure would only appear when somebody checked a certificate on a
+different machine from the one that issued it.
+
+`code` is a short public handle (`AXN-4F7Q-2M8Z`, drawn from an alphabet with no I/O/0/1 because it gets read
+aloud), and it is *inside* the signed payload as well — a verifier told a code must be able to see that the
+record they fetched is the record that code names. Nothing is ever edited: `revoked_at` and `revoked_reason`
+are a dated fact beside the signature, because "issued then revoked" is a different claim from "never
+issued".
+
 ### Source identifiers (`source_ref`)
 
 `teams.source_ref`, `users.source_ref` and `submissions.source_ref` carry the identifier a row had in the
@@ -329,18 +474,35 @@ instead of creating a second event.
 | `assignments` | `uq_assignment_pair` | no double assignment |
 | `scores` | `uq_score_pair` | one verdict per judge per project |
 | `score_criteria` | `uq_score_criterion_key` | one value per criterion per verdict |
+| `voters` | `uq_voters_email`, unique `token_hash` | one ballot per address; a token cannot be read out of the database |
+| `votes` | `uq_vote_voter_submission` | one vote per person per project — a second vote is an error, not an edit |
+| `votes` | `ck_votes_score_range`, `ck_votes_status` | `score` ∈ 1–5 and `status` ∈ {cast, struck}, enforced in the database as well as the API |
+| `comments` | `ck_comments_status` | `visible`/`hidden`: moderation hides, it never deletes |
+| `webhook_deliveries` | `ck_webhook_deliveries_status` | `pending`/`delivered`/`failed`/`dead` — a dead delivery is a state, not a disappearance |
+| `participation_records` | `uq_participation_records_code`, `ck_participation_records_kind` | one public code per record; `subject_kind` ∈ {judge, participant, team} |
 
 ## Migration chain
 
 | Revision | Adds |
 | -------- | ---- |
+| `0008_webhooks_and_records` | `webhook_endpoints`, `webhook_deliveries`, `participation_records` — the outbox, its receiver registry and the signed records |
+| `0007_community_surface` | `voters`, `votes`, `comments`, `throttle_events` — the community surface and the rate limiter's storage |
 | `0006_imported_reality_is_partial` | `teams.source_ref`, `submissions.duplicate_of_submission_id`; replaces `uq_teams_name` and `uq_submissions_team` with the partial indexes above |
-| `0001_initial` | `users`, `teams`, `team_members`, `submissions`, `assignments`, `scores`, `audit_logs`, and the append-only trigger |
+| `0005_audit_actor_is_historical` | Fixes the append-only trigger against `ON DELETE SET NULL`: a user deleted after their action must not rewrite history |
+| `0004_integrity_constraints` | Database-level domain checks for the values the API already validates (roles, statuses, score ranges) |
+| `0003_import_and_coverage` | `import_batches`, `duplicate_reviews`, and the `source_ref` identifiers on `users`, `teams` and `submissions` |
 | `0002_event_and_rubrics` | `tracks`, `prizes`, `rubrics`, `score_criteria`; `submissions.{track_id,status,submitted_at}`, `scores.rubric_id`; backfills `submitted_at` |
+| `0001_initial` | `users`, `teams`, `team_members`, `submissions`, `assignments`, `scores`, `audit_logs`, and the append-only trigger |
 
-`0002` is additive and nullable-or-defaulted throughout, so it applies to a database that is already running
+`0002` onwards are additive and nullable-or-defaulted, so they apply to a database that is already running
 an event: existing submissions become `submitted`, keep a null track, and are unaffected by the rubric.
+`0007` and `0008` create new tables only, so an event that is mid-flight gains the community surface and the
+outbox without any existing row changing shape.
 
-The test suite builds the schema with `Base.metadata.create_all` for speed, and `0001`/`0002` are kept in
-step with it by hand. When adding a column to a model, add it to a migration in the same commit — the two
-paths must agree, and `docker compose up` runs `alembic upgrade head`.
+The test suite builds the schema with `Base.metadata.create_all` for speed, and the migrations are kept in
+step with it — **by test, not by hand**: `api/tests/pg/test_migrations.py` migrates an empty PostgreSQL
+database to head and then compares every reflected column, nullability and length against the models, and
+`test_the_revision_chain_is_linear` pins the exact chain. That test is why `0007`/`0008` gained
+`nullable=False` on their timestamp columns: the models said a delivery always has a creation time, the
+migration left the column nullable, and the only reason that divergence did not reach a deployment is that
+the comparison runs in CI. When adding a column to a model, add it to a migration in the same commit.

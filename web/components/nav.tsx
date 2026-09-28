@@ -59,7 +59,14 @@ export function Nav() {
 
   const user = me?.user ?? null;
 
-  const links: Array<{ href: string; label: string }> = [{ href: "/gallery", label: "Gallery" }];
+  // Gallery, then the two public community doors. Voting and its results are open
+  // to anyone with a verified address rather than to a role, so they are not behind
+  // a sign-in and are not conditional on `user`.
+  const links: Array<{ href: string; label: string }> = [
+    { href: "/gallery", label: "Gallery" },
+    { href: "/vote", label: "Vote" },
+    { href: "/results", label: "Results" },
+  ];
   if (user?.role === "participant") {
     links.push({ href: "/team", label: "Team" }, { href: "/submit", label: "Submission" });
   }
@@ -99,7 +106,7 @@ export function Nav() {
             ))}
           </div>
 
-          {eventWindow && <Deadline window={eventWindow} className="ml-1 hidden lg:inline-flex" />}
+          {eventWindow && <Deadline window={eventWindow} className="ml-1 hidden xl:inline-flex" />}
 
           <ThemeToggle />
 

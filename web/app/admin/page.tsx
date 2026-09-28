@@ -2,6 +2,9 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { BundlePanel } from "@/components/console/bundle-panel";
+import { RecordsPanel } from "@/components/console/records-panel";
+import { WebhooksPanel } from "@/components/console/webhooks-panel";
 import { RequireAuth } from "@/components/require-auth";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -35,7 +38,10 @@ type Tab =
   | "rubric"
   | "audit"
   | "event"
-  | "archive";
+  | "archive"
+  | "webhooks"
+  | "records"
+  | "bundle";
 
 const TABS: Array<{ id: Tab; label: string }> = [
   { id: "leaderboard", label: "Leaderboard" },
@@ -47,6 +53,9 @@ const TABS: Array<{ id: Tab; label: string }> = [
   { id: "audit", label: "Audit trail" },
   { id: "event", label: "Event setup" },
   { id: "archive", label: "Archive" },
+  { id: "webhooks", label: "Webhooks" },
+  { id: "records", label: "Records" },
+  { id: "bundle", label: "Export & import" },
 ];
 
 type RubricRow = { key: string; label: string; weight: number };
@@ -1026,6 +1035,13 @@ function AdminContent() {
         </div>
       )}
 
+      {/* The three T4 panels each own their whole tab: they talk to endpoints the rest
+          of the console has no reason to touch, and keeping them out of this file is
+          what stops it from becoming the one place everything is edited. */}
+      {tab === "webhooks" && <WebhooksPanel />}
+      {tab === "records" && <RecordsPanel />}
+      {tab === "bundle" && <BundlePanel />}
+
       {tab === "import" && (
         <div className="space-y-6">
           <Card>
@@ -1349,7 +1365,8 @@ export default function AdminPage() {
           <h1 className="text-2xl font-semibold">Organiser console</h1>
           <p className="text-sm text-muted-foreground">
             The normalized leaderboard, judging progress, tracks and prizes, the rubric, the commit
-            review queue, dataset import and the duplicate review queue, the audit trail and the archive.
+            review queue, dataset import and the duplicate review queue, the audit trail, the archive,
+            the outbound webhook outbox, signed participation records and the whole-event bundle.
           </p>
         </div>
         <AdminContent />

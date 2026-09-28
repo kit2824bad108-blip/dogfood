@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import assignment, audit, fixtures
+from .. import assignment, audit, fixtures, webhooks
 from ..db import get_db
 from ..deps import client_ip, require_role
 from ..models import DuplicateReview, Submission, Team, User
@@ -124,6 +124,17 @@ def decide_duplicate(
     existing.note = payload.note
     existing.actor_id = user.id
     existing.actor_email = user.email
+
+    # A decision is not a note to file: confirming a duplicate has to change what
+    # the leaderboard counts, or the console would be recording an opinion nobody
+    # acts on. So the decision is applied to the submission itself — and reversing
+    # it clears the mark, because "distinct after all" is a real outcome.
+    duplicate = db.get(Submission, payload.submission_id)
+    canonical = db.get(Submission, payload.duplicate_of_submission_id)
+    if payload.decision == "duplicate":
+        duplicate.duplicate_of_submission_id = canonical.id
+    elif duplicate.duplicate_of_submission_id is not None:
+        duplicate.duplicate_of_submission_id = None
     db.flush()
 
     audit.record(
@@ -138,6 +149,19 @@ def decide_duplicate(
             "decision": payload.decision,
         },
     )
+    if payload.decision == "duplicate":
+        webhooks.emit(
+            db,
+            webhooks.EVENT_DUPLICATE_CONFIRMED,
+            {
+                "submission_id": canonical.id,
+                "submission_title": canonical.title,
+                "duplicate_submission_id": duplicate.id,
+                "duplicate_title": duplicate.title,
+                "decided_by": user.email,
+                "effect": "excluded from the ranking; nothing was deleted",
+            },
+        )
     db.commit()
     return {
         "decision": {
@@ -145,7 +169,16 @@ def decide_duplicate(
             "duplicate_of_submission_id": existing.duplicate_of_submission_id,
             "decision": existing.decision,
             "decided_by": existing.actor_email,
-        }
+        },
+        "applied": {
+            "duplicate_of_submission_id": duplicate.duplicate_of_submission_id,
+            "excluded_from_ranking": duplicate.duplicate_of_submission_id is not None,
+        },
+        "note": (
+            "The duplicate row is kept and excluded from the ranking. Nothing was "
+            "deleted: a participant's work is not destroyed on the strength of a "
+            "string comparison."
+        ),
     }
 
 

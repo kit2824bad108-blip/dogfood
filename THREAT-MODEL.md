@@ -38,9 +38,14 @@ never as control.
 *The attack:* flood the event with accounts, or arrange for the same person to hold multiple identities, and
 use those accounts to vote a project to the top.
 
-**Why it does not work here: participants cannot vote at all.**
+**The thing being protected, stated precisely.** Two different instruments exist and only one of them moves
+the ranking. A judge's verdict feeds the normalized leaderboard; a community vote feeds its own tally, which
+is never averaged into `axion_score`. So a ballot-stuffing campaign cannot move the result that decides the
+event — it can only inflate a separate number that organisers read alongside it.
 
-Axion has no participant-facing vote. Scoring routes are guarded by
+**Why the judge path does not work here: participants cannot vote at all.**
+
+Scoring routes are guarded by
 `Depends(require_role(*JUDGE_ROLES))` in `api/app/routers/judging.py`, and `JUDGE_ROLES = ("judge", "admin")`.
 A participant account calling `POST /api/judging/scores` is rejected by the role guard before any handler
 logic runs, no matter how many accounts are created. Creating accounts is cheap; the accounts are useless.
@@ -55,6 +60,24 @@ Layered on top of that:
 | Assignment is a prerequisite | `_assignment()` check in the scoring handler | A judge cannot score a project outside their assignments |
 | Attribution | `audit_logs.actor_id` + `actor_email` + `ip`, written on every score and every login attempt | Identity is recorded, so a coordinated cluster is *visible* |
 | Full-coverage assignment | Every judge scores every project (`services.assign_judges`) | An injected judge is a large, conspicuous change to the calibration table, not a quiet one |
+
+**The community ballot (T3), and what it does and does not stop.**
+
+| Mechanism | Implementation | Effect |
+| --------- | -------------- | ------ |
+| An address, not an account | `voters.email` unique; a ballot token is stored as a SHA-256 digest | Creating accounts does not create ballots, and the database does not hold anything that can be replayed as a live ballot |
+| The link is the proof | `GET /api/vote/verify?token=…` verifies the address and sets a cookie; `_verified_voter_or_403` demands it | A token that has not been followed cannot vote or read a ballot |
+| A reissued link kills the old one | `POST /api/vote/register` rotates `token_hash` | A leaked or forwarded link stops working the moment the owner asks for another |
+| One vote per person per project | `uq_vote_voter_submission` | A second vote is `409`, not an update: "changed my mind" is not a way to vote twice |
+| Nothing is tallied while it could steer | `GET /api/vote/results` answers `403` with its reason until the window closes; the ballot order differs per voter and is stable within one | No running total to brigade, and no fixed order that hands the top of the list an advantage |
+| Flooding is bounded | `throttle_events` buckets per voter, per address and per IP, checked on register, verify, ballot reads, votes and comments | Volume becomes slow and visible rather than effective |
+| Striking, not deleting | `votes.status` + `struck_at`/`struck_by`/`struck_reason` | A fraudulent vote is neutralised while the evidence of it stays |
+
+**Residual risk — stated honestly.** Email verification is only as strong as the addresses offered to it, so a
+person who controls several reachable addresses gets several ballots; without a mail server there is nothing
+to send a challenge to that would change this. That is why the community number is published *beside* the
+judged result rather than blended into it, and why the organiser console exposes turnout, per-IP volume and
+blocked voters: stuffing is a pattern to be seen, not a thing this design can prevent outright.
 
 **Residual risk — stated honestly.** Sybil *registration* is not prevented: anyone can create participant
 accounts, and a determined organiser could create many judge accounts. What is prevented is those accounts
@@ -211,11 +234,66 @@ Residual risk: an organiser can import a dataset whose declared duplicates are w
 is recomputed from the data rather than trusted from the file, and why the two are compared in the
 diagnostics (`duplicates_declared_in_file` versus `duplicates_detected`).
 
+## Threat 8 — A forged or replayed webhook
+
+*The attack:* find a receiver's URL and POST a fake `submission.submitted`, or capture a real delivery and
+replay it later, so a downstream system acts on something that never happened.
+
+| Mechanism | Implementation | Effect |
+| --------- | -------------- | ------ |
+| Every delivery is signed | `sha256=<hex>` over `'<timestamp>.<body>'` with the endpoint's own secret, sent in `X-Axion-Signature` | A receiver can tell this deployment from anyone else who knows the URL |
+| The timestamp is signed | It is part of the signed material, and `verify_signature` enforces a 300-second tolerance by default | A captured delivery stops being valid within minutes instead of forever |
+| The body is canonical | `body_bytes` sorts keys with no incidental whitespace | The signature covers the bytes actually sent, so a whitespace difference cannot be argued away |
+| Retries reuse the stored envelope | `payload` and `signature` are written at emit time and never rebuilt; `X-Axion-Delivery` carries the id | A receiver can dedupe on the id; a retry is provably the same event, not a new one |
+| Secrets are per-endpoint and rotatable | `secret` on `webhook_endpoints`; `PATCH {rotate_secret: true}` | One compromised receiver does not compromise the others, and repair is a single call |
+| Payloads carry no addresses | Judge verdicts name the judge by address but not the verdict *value*; votes carry `voter_<id>` and no address; comments carry the body and no address | A subscriber cannot use webhooks to reconstruct a roster or a live tally |
+
+**Residual risk — stated honestly.** The signature scheme is only as good as the secret's handling on the
+receiver's side, and there is no mTLS or IP allow-list. The console shows the secret on demand rather than
+once, deliberately — a secret nobody can read is a secret nobody can configure a receiver with — which means
+organiser access to the console is equivalent to access to every receiver's secret.
+
+## Threat 9 — A forged participation record
+
+*The attack:* mint a certificate saying a person judged, or a team won, without the deployment having said
+so — and have a third party believe it.
+
+| Mechanism | Implementation | Effect |
+| --------- | -------------- | ------ |
+| Records are signed over the bytes that are stored | `records.sign` over `record.payload` as written, verified with `hmac.compare_digest` | Verification is a comparison, not a reconstruction: it cannot depend on how a backend round-trips a timestamp |
+| The claim is inside the signature | Event, subject, summary, algorithm, key fingerprint, code and verify URL | A verifier needs the record and the published key and nothing else |
+| The symmetric key is published **only after the close** | `settings.records_verifiable_publicly` derives from `event_window_closed`; `key_publication()` states the reason on the wire | Nobody can mint a "this team won" record while results still matter; afterwards a forgery changes nothing already issued and cited |
+| Re-issuing is refused | `issue_for_event` skips a subject that already holds an unrevoked record | A signed statement about a moment cannot be silently replaced with a different one |
+| Corrections are additive | `revoked_at` / `revoked_reason`, and the signature is untouched | "Issued then revoked" and "never issued" stay distinguishable — which is the whole point of a revocation |
+
+**Residual risk — stated honestly.** HMAC is symmetric, so between the close and the end of time anyone
+holding the published key can also forge a *new* record; they cannot alter one already issued, and anything
+issued after the close is dated and visible in the console. A deployment that needs forgery resistance *after*
+the close needs an asymmetric scheme, which is a dependency this one deliberately does not take.
+
+## Threat 10 — An export that leaks, or an import that half-applies
+
+*The attack:* the organiser's own tooling becomes the weakest link — a bundle that carries credentials, an
+import that leaves a deployment neither the old event nor the new one, or a purge that destroys the evidence
+of a failing webhook.
+
+| Mechanism | Implementation | Effect |
+| --------- | -------------- | ------ |
+| No credentials travel | The bundle carries identities and never `password_hash` or a session; the acceptance suite asserts the string is absent from the serialised document | Moving an event does not move the ability to sign in as anyone in it |
+| Import is dry by default | `BundleImportRequest.mode` defaults to `dry_run`, and a dry run rolls back | What an import would do is visible before it does anything |
+| A bundle is refused whole | `validate_bundle` names every problem; the router answers `422` with them | Half an event is worse than none, so a bundle naming a team it does not contain applies nothing |
+| The checksum is verified, not decorative | `checksum(tables)` recomputed and compared on import | A bundle edited in transit is refused rather than applied |
+| Import is idempotent | Every row is matched on the key it is identified by | Importing twice updates rather than duplicating |
+| Purging is explicit, and it cascades in code | `?purge=true` deletes deliveries before the endpoint, in Python | SQLite does not enforce foreign keys, so relying on `ON DELETE CASCADE` would have left orphaned rows on the offline path |
+
 ## Out of scope
 
 Named so that nobody assumes coverage that is not there:
 
-- **Denial of service** — no rate limiting, no WAF, no request quotas. This is a self-hosted event tool.
+- **Denial of service** — no WAF and no request quotas beyond the community surface's per-bucket limits on
+  ballot, vote and comment writes, which exist to stop flooding rather than to survive an attack. Unauthenticated
+  reads are unlimited by design: this is a self-hosted event tool, and the public gallery is supposed to be
+  embeddable and cheap to serve.
 - **Malicious submissions** — Axion stores repository and demo URLs; it never clones, executes or renders
   participant code. Judging a link is a human action with a human risk model.
 - **Host and container hardening** — the Compose file is a demo-grade deployment, not a hardened one.

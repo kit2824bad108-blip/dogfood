@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import audit
+from .. import audit, webhooks
 from ..db import get_db
 from ..deps import client_ip, require_role
 from ..models import Assignment, Score, ScoreCriterion, Submission, Team, User
@@ -426,6 +426,23 @@ def upsert_score(
                 "technical_score_derived": derived_technical is not None,
             },
         )
+        # Judges are named in webhook payloads by their address rather than by an
+        # internal id: a subscriber is a different system, and it has to be able to
+        # join on something it can see. The verdict *value* is deliberately not
+        # included — a downstream system that republished live scores while the
+        # event was running would undo the blind tier's whole point.
+        webhooks.emit(
+            db,
+            webhooks.EVENT_SCORE_MODIFIED if previous is not None else webhooks.EVENT_SCORE_SUBMITTED,
+            {
+                "judge": user.email,
+                "submission_id": submission.id,
+                "submission_title": submission.title,
+                "phase": "technical",
+                "previous": previous,
+                "rubric_id": score.rubric_id,
+            },
+        )
     elif payload.technical_comment is not None and score.technical_score is not None:
         score.technical_comment = payload.technical_comment
 
@@ -454,6 +471,17 @@ def upsert_score(
                 "submission_id": submission.id,
                 "previous": previous,
                 "value": payload.presentation_score,
+            },
+        )
+        webhooks.emit(
+            db,
+            webhooks.EVENT_PRESENTATION_SUBMITTED,
+            {
+                "judge": user.email,
+                "submission_id": submission.id,
+                "submission_title": submission.title,
+                "phase": "presentation",
+                "previous": previous,
             },
         )
     elif payload.presentation_comment is not None and score.presentation_score is not None:

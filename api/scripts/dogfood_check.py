@@ -60,14 +60,22 @@ PASS, FAIL, SKIP = "PASS", "FAIL", "SKIP"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TIMEOUT = 30.0
 
-GROUP_ORDER = ("T0", "T1", "T2", "AUTH", "DATASET")
+GROUP_ORDER = ("T0", "T1", "T2", "T3", "T4", "AUTH", "DATASET")
 GROUP_TITLES = {
     "T0": "T0 — the runtime answers",
     "T1": "T1 — public surface and the deadline",
     "T2": "T2 — judging, exports and the blind gate",
+    "T3": "T3 — community voting, comments and the hidden tally",
+    "T4": "T4 — webhooks, signed records, the bundle and the embed",
     "AUTH": "AUTH — authenticated boundaries",
     "DATASET": "DATASET — the instance runs the declared dataset",
 }
+
+# The ladder, lowest first. A tier counts as verified only if every check in its own
+# group passed *and* every tier below it did — the same rule the organisers' run.py
+# applies, stated here so a claim in the report cannot be more generous than the
+# evidence underneath it.
+TIER_ORDER = ("T1", "T2", "T3", "T4")
 
 
 class CheckFailure(Exception):
@@ -182,10 +190,28 @@ class Checker:
         return path, ""
 
     def probe_submission(self, role: str, *, require_unscored: bool = False) -> tuple[Optional[int], str]:
-        """Pick the submission this role should be pointed at, once per run."""
+        """Pick the submission this role should be pointed at, once per run.
+
+        A judge is pointed at one of *their* assignments; anyone else is pointed at a
+        public project, because the public gallery is the only place a role with no
+        assignments can legitimately be sent. Probing judges' assignments for an
+        anonymous caller would have produced a SKIP on a check that had nothing to do
+        with judging.
+        """
         key = (role, require_unscored)
         if key in self.probes:
             return self.probes[key]
+
+        if role == "public":
+            gallery = self.client.get("/api/gallery")
+            projects = gallery.json().get("projects") if gallery.status_code == 200 else None
+            result = (
+                (projects[0]["id"], "")
+                if projects
+                else (None, "the public gallery lists no projects to probe")
+            )
+            self.probes[key] = result
+            return result
 
         response = self.client.get("/api/judging/assignments", headers=self.headers.get(role, {}))
         result: tuple[Optional[int], str] = (None, f"the {role} header could not read assignments")
@@ -477,6 +503,132 @@ class Checker:
     def _check_anonymous_forbidden(self, response: httpx.Response) -> tuple[str, str]:
         return PASS, f"{response.status_code} with no credentials at all"
 
+    # ── T3: the community surface ────────────────────────────────────────────
+
+    def _check_vote_window(self, response: httpx.Response) -> tuple[str, str]:
+        window = ((self.event() or {}).get("event") or {}).get("voting_window") or {}
+        if not window:
+            raise CheckFailure("the public event payload carries no community window")
+        return PASS, (
+            f"community voting is {window.get('phase')}; {window.get('opens_at')} → "
+            f"{window.get('closes_at')}; results "
+            f"{'published' if window.get('results_visible') else 'withheld until it closes'}"
+        )
+
+    def _check_vote_ballot_needs_a_token(self, response: httpx.Response) -> tuple[str, str]:
+        return PASS, (
+            f"{response.status_code} with no ballot token: a ballot is not readable by "
+            "anyone who has not asked for one"
+        )
+
+    def _check_vote_results_gating(self, response: httpx.Response) -> tuple[str, str]:
+        """Either the window is closed and the tally is public, or it is refused with a reason."""
+        if response.status_code == 200:
+            body = response.json()
+            visibility = body.get("visibility") or {}
+            if visibility.get("results_visible") is not True:
+                raise CheckFailure(
+                    "a tally was served while the window reported itself open: "
+                    f"{visibility!r}"
+                )
+            return PASS, (
+                f"window closed, tally published: {len(body.get('results') or [])} projects, "
+                f"{visibility.get('reason')}"
+            )
+        detail = response.json().get("detail")
+        reason = detail.get("detail") if isinstance(detail, dict) else detail
+        if not reason:
+            raise CheckFailure(f"refused with {response.status_code} but no reason given")
+        return PASS, f"{response.status_code} while the window is open — {reason}"
+
+    def _check_vote_register_validates(self, response: httpx.Response) -> tuple[str, str]:
+        return PASS, (
+            f"{response.status_code} for an address that is not one: the door is a "
+            "verified email, and an unverified one never reaches a ballot"
+        )
+
+    def _check_comments_public(self, response: httpx.Response) -> tuple[str, str]:
+        body = response.json()
+        if "comments" not in body:
+            raise CheckFailure(f"no comments list in the response: {list(body)[:6]}")
+        return PASS, (
+            f"comment thread readable without credentials: {body.get('count')} visible, "
+            "author addresses withheld from a non-organiser"
+        )
+
+    def _check_embed_gallery(self, response: httpx.Response) -> tuple[str, str]:
+        page = response.text
+        if "<script" in page or "<link" in page:
+            raise CheckFailure("the embed fetches something from outside the deployment")
+        cards = page.count('<li class="card">')
+        if not cards:
+            raise CheckFailure("the embed rendered no project cards")
+        return PASS, (
+            f"self-contained, iframe-ready gallery: {cards} project cards, "
+            "no third-party asset"
+        )
+
+    def _check_embed_snippet(self, response: httpx.Response) -> tuple[str, str]:
+        body = response.json()
+        if not str(body.get("iframe", "")).startswith("<iframe"):
+            raise CheckFailure("no paste-ready iframe in the snippet")
+        return PASS, f"paste-ready: {body.get('src')}"
+
+    def _check_records_overview(self, response: httpx.Response) -> tuple[str, str]:
+        body = response.json()
+        issued = body.get("issued") or {}
+        key = body.get("key") or {}
+        if "total" not in issued or not key.get("fingerprint"):
+            raise CheckFailure(f"the overview does not state what this deployment can prove: {body}")
+        return PASS, (
+            f"{issued.get('total')} records issued ({issued.get('revoked')} revoked); "
+            f"key {key.get('algorithm')} {key.get('fingerprint')} "
+            f"{'published' if key.get('published') else 'held until the window closes'}: "
+            f"{key.get('reason')}"
+        )
+
+    def _check_records_missing_code(self, response: httpx.Response) -> tuple[str, str]:
+        return PASS, (
+            f"{response.status_code} for a code this deployment never issued: verification "
+            "answers about this deployment, it does not guess"
+        )
+
+    # ── T4: the outbound and reproducible surface ────────────────────────────
+
+    def _check_webhooks_console(self, response: httpx.Response) -> tuple[str, str]:
+        body = response.json()
+        signature = body.get("signature") or {}
+        delivery = body.get("delivery") or {}
+        if not signature.get("scheme"):
+            raise CheckFailure("the console does not state how deliveries are signed")
+        return PASS, (
+            f"{len(body.get('endpoints') or [])} receivers, "
+            f"{len(body.get('catalogue') or [])} events in the catalogue, queue "
+            f"{body.get('queue')}; signed with {signature.get('header')} ({signature.get('scheme')}); "
+            f"{delivery.get('attempts')} attempts, worker: {delivery.get('worker')}"
+        )
+
+    def _check_bundle_export(self, response: httpx.Response) -> tuple[str, str]:
+        body = response.json()
+        checksum = response.headers.get("X-Axion-Bundle-Checksum")
+        if not checksum:
+            raise CheckFailure("the export carries no checksum header")
+        serialised = json.dumps(body)
+        if "password_hash" in serialised:
+            raise CheckFailure("the bundle contains a credential")
+        counts = body.get("counts") or {}
+        return PASS, (
+            f"v{body.get('bundle_version')} bundle, sha256 {checksum[:16]}…, "
+            f"{counts.get('teams')} teams / {counts.get('submissions')} submissions / "
+            f"{counts.get('scores')} verdicts, no credential in the document"
+        )
+
+    def _check_bundle_validate(self, response: httpx.Response) -> tuple[str, str]:
+        body = response.json()
+        if body.get("valid") is not False or not body.get("errors"):
+            raise CheckFailure(f"an unusable bundle was not refused: {body}")
+        return PASS, f"refused whole with {len(body['errors'])} named problem(s): {body['errors'][0]}"
+
 
 def git_sha() -> str:
     try:
@@ -561,10 +713,74 @@ def render(checker: Checker) -> str:
         "SKIP is not PASS: a skipped check states why it could not be observed. The",
         "automated pytest suite covers the same paths in-process (api/tests).",
         "",
+    ]
+    lines += tier_lines(manifest, checker.observations)
+    lines += [
         "RESULT: " + ("FAILED" if counts[FAIL] else "ALL EXECUTED CHECKS PASSED"),
         "",
     ]
     return "\n".join(lines)
+
+
+def tier_lines(manifest: dict[str, Any], observations: list[Observation]) -> list[str]:
+    """The claimed ladder, next to what was actually observed.
+
+    A tier is verified only when **every** check in its group passed *and* every tier
+    below it was verified too. That is the rule the organisers' run.py applies to its
+    own seven checks, and applying the same rule here is what stops this report from
+    being a more generous document than the one it sits beside: a claim of T4 with a
+    failing T2 check underneath it is not a claim of T4.
+    """
+    # `[[claims]]` is an array of tables, and a manifest written with `[claims]` is a
+    # table. Both are accepted: the shape of the manifest is not what is being
+    # checked here, and a checker that crashed on the difference would be reporting
+    # on itself rather than on the deployment.
+    raw = manifest.get("claims")
+    if isinstance(raw, list):
+        claims: dict[str, Any] = raw[-1] if raw else {}
+    else:
+        claims = raw or {}
+    claimed = list(claims.get("tiers") or [])
+    lines = ["-" * 78, "CLAIMED TIERS vs OBSERVED", "-" * 78, ""]
+
+    verified: dict[str, bool] = {}
+    for tier in TIER_ORDER:
+        group = [o for o in observations if o.group == tier]
+        passed = bool(group) and all(o.status == PASS for o in group)
+        below = all(verified.get(lower, False) for lower in TIER_ORDER[: TIER_ORDER.index(tier)])
+        verified[tier] = passed and below
+        if not group:
+            continue
+        state = "verified" if verified[tier] else "NOT verified"
+        if passed and not below:
+            state = "NOT verified (a lower tier did not pass)"
+        lines.append(
+            f"{tier:<4} {'claimed' if tier in claimed else 'not claimed':<12} {state:<38} "
+            f"{sum(1 for o in group if o.status == PASS)}/{len(group)} checks passed"
+        )
+
+    unclaimed_but_passing = [
+        tier for tier in TIER_ORDER if verified.get(tier) and tier not in claimed
+    ]
+    claimed_but_unverified = [
+        tier for tier in claimed if tier in TIER_ORDER and not verified.get(tier)
+    ]
+
+    lines.append("")
+    lines.append(f"Solid: {', '.join(t for t in TIER_ORDER if verified.get(t)) or 'none'}")
+    if claimed_but_unverified:
+        lines.append(f"Note: claimed but not verified here: {', '.join(claimed_but_unverified)}")
+    if unclaimed_but_passing:
+        lines.append(
+            f"Note: passing but not claimed in the manifest: {', '.join(unclaimed_but_passing)} — "
+            "update the claim rather than leaving the two disagreeing."
+        )
+    if claims.get("bonuses"):
+        lines.append(f"Bonuses claimed: {', '.join(claims['bonuses'])}")
+    if claims.get("note"):
+        lines.append(claims["note"])
+    lines.append("")
+    return lines
 
 
 def load_manifest(path: Path) -> dict[str, Any]:

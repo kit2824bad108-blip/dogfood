@@ -9,7 +9,21 @@ from fastapi.middleware.cors import CORSMiddleware
 from . import access
 from .config import settings
 from .readiness import readiness_report
-from .routers import admin, admin_import, auth, devtools, event, judging, submissions, teams
+from .routers import (
+    admin,
+    admin_import,
+    auth,
+    bundle,
+    community,
+    devtools,
+    embed,
+    event,
+    judging,
+    records,
+    submissions,
+    teams,
+    webhooks,
+)
 
 
 @asynccontextmanager
@@ -52,8 +66,20 @@ app.include_router(event.router)
 app.include_router(teams.router)
 app.include_router(submissions.router)
 app.include_router(judging.router)
+# The community surface (T3): email-gated ballots, project comments, and the
+# organiser tooling that polices them. It is a separate router because it is a
+# separate door — a voter is not a user, and nothing here authenticates the way
+# the rest of the API does.
+app.include_router(community.router)
 app.include_router(admin.router)
 app.include_router(admin_import.router)
+# The T4 surface: an outbound webhook outbox an organiser manages, signed
+# participation records anyone can verify, a whole-event bundle that makes this
+# deployment one you can leave, and a read-only gallery that other sites embed.
+app.include_router(webhooks.router)
+app.include_router(records.router)
+app.include_router(bundle.router)
+app.include_router(embed.router)
 app.include_router(devtools.router)
 
 
