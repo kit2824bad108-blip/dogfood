@@ -16,7 +16,7 @@ artefacts, on purpose:
     acceptance-report.txt           their run.py, reading the root .dogfood.toml
                                     (seven checks, the same program every team runs)
     acceptance-report.selfcheck.txt this script, reading api/scripts/selfcheck.toml
-                                    (nineteen checks, including the ones that
+                                    (twenty-one checks, including the ones that
                                     cannot be asked of a project by a third party)
 
 Both were run against the same instance. A claim verified only by its author is

@@ -192,3 +192,89 @@ The first Docker build failed on `pip install` — `greenlet` came back as "from
 Next.js image was downloading at the same time. Directly fetching the same wheel in the same base image
 succeeded, so it was a flaky index response rather than a real dependency problem; the Dockerfile now pins
 `--retries 6 --timeout 90` and the build is reproducible.
+
+## Phase A4 — the organisers' four files (2026-09-28)
+
+Phases A1–A3 were written while the organisers' published files were not available to this machine: the
+`run.py`, `fixtures.json` and `example.dogfood.toml` named by the brief had never been fetched, so the root
+`fixtures.json` was Axion's own generated dataset and `.dogfood.toml` was Axion's own manifest in a shape of
+its own. The published spec page was then read, and this phase reconciles the repository with it. Rows 4, 7,
+14 and 15 above describe the artefacts as they were *before* that reconciliation: `acceptance-report.txt` was
+produced by Axion's own manifest checker reading the root `.dogfood.toml`. From this phase on, the mapping
+is the brief's own:
+
+| Artefact | Produced by | Manifest |
+| -------- | ----------- | -------- |
+| `acceptance-report.txt` | **their `run.py`**, byte-for-byte as published | the root `.dogfood.toml`, now in the published shape |
+| `acceptance-report.selfcheck.txt` | `api/scripts/dogfood_check.py` | `api/scripts/selfcheck.toml` (twenty-one checks, ours) |
+| `acceptance-report.axion.txt` | `api/scripts/acceptance.py` | none — it walks the tier ladder T0–T4 and the bonus claims |
+
+What was vendored, and where: `run.py` and `fixtures.json` at the repository root (SHA-256
+`aa98963841bc…` and `252896bc45d4…`, recorded in README.md), `spec/spec.md` and `spec/example.dogfood.toml`
+under `spec/`, and Axion's own dataset moved to `data/axion-fixtures.json` so the two are never confused.
+The rest of this section records what was executed against the real files.
+
+| # | Command | Observed result |
+| - | ------- | --------------- |
+| 17 | `docker compose down -v && docker compose up -d --build` | Docker Desktop 29.8.0 had to be started first (the daemon was stopped, not absent). On a **fresh volume**: migrations `0001`→`0006` applied to an empty database, then the organisers' `fixtures.json` seeded as published — 41 projects, 30 judges, 40 teams, 91 participants, 126 reviews, 199 assignments, 1 duplicate marked, 0 invalid records, `closed_event: true`. All three containers healthy |
+| 18 | `curl http://localhost:3000/api/gallery` | `200`; 40 rows and 8 tracks. 40, not 41: the duplicate submission is imported, stored and scored, and excluded from the public gallery |
+| 19 | `python3 run.py .dogfood.toml > acceptance-report.txt` — **the organisers' checker, unmodified**, against the Compose stack on `:3000` | **7 checks, 7 PASS, 0 FAIL**: gallery public; a fixture title on page one; the closed event refusing a write; judge A's own scores; judge B refused a peer's scores; a participant refused judge surfaces; the CSV export. Footer: `claimed T1 T2, verified T1 T2` |
+| 20 | `python api/scripts/dogfood_check.py api/scripts/selfcheck.toml --out acceptance-report.selfcheck.txt` against the same instance | **21 passed, 0 failed, 0 skipped** — including `403` on `/api/judging/judges/jdg_01/scores` for judge B, the presentation gate before a technical verdict, all three CSV exports (126 verdict rows), and `submissions=41 judges=30 teams=40 verdicts=126 assignments=199` observed against the declared figures |
+| 21 | Demo instance on `:8011` (SQLite, `SEED_MODE=demo EVENT_SOURCE=env`, open window), then `AXION_API_URL=http://127.0.0.1:8011 python api/scripts/acceptance.py --out acceptance-report.axion.txt` | **27 passed, 0 failed, 3 skipped** (30 checks). The DOCS check now walks the brief's own root listing: 13 files and 6 directories, and `LICENSE` asserted to be MIT |
+| 22 | `cd api && python -m pytest -q --ignore=tests/pg` | **175 passed**, 1 warning, 3 m 14 s. The one warning is the pre-existing Starlette `anyio.abc.BlockingPortal` deprecation notice |
+| 23 | `AXION_TEST_DATABASE_URL=postgresql+psycopg://axion:axion@127.0.0.1:5433/axion_test AXION_REQUIRE_POSTGRES=1 python -m pytest -q tests/pg` | **118 passed**, 1 warning, 1 m 21 s — the real migrations, the real append-only trigger and the partial unique indexes under concurrency |
+| 24 | `cd web && npm run typecheck && npm run build` | Clean: 9 routes, 103 kB shared first-load JS |
+| 25 | `python api/scripts/validate_fixtures.py fixtures.json` and `… data/axion-fixtures.json` | Both `VALID`, exit 0. Theirs: 41 projects / 30 judges / 40 teams / 91 participants / 126 reviews / 199 assignments, window `2026-02-26T18:00:00Z → 2026-03-01T18:00:00Z`, 8 incomplete batches, 1 duplicate (`prj_41 → prj_07`), 3 zero-variance judges (`jdg_07`, `jdg_27`, `jdg_28`), 73 assignments without verdicts. Ours: 40 / 12 / 40 / 48 / 131 / 138, digest `b5c9da177cab` |
+
+One detail row 19 does not show on its face. The probe the checker sends for the closed event carries no
+repository URL, so a portal that validated the body first would answer `422` for the missing field — passing
+the letter of the check while demonstrating nothing about deadlines. The window is therefore checked before
+the body is parsed, and the refusal is `403` with `The submission window is closed — no further edits are
+accepted`. That ordering is asserted in `api/tests/test_dogfood_acceptance.py`, which makes the same seven
+requests in-process and then runs the organisers' `run.py` verbatim against a real `uvicorn` over HTTP.
+
+### Defects found while verifying this phase
+
+Continuing the numbering from the section above.
+
+9. **There was no `LICENSE` file at all.** The brief lists a non-OSI or absent licence among the automatic
+disqualifiers, and this repository had neither a file nor a reference to one. MIT now, checked by the DOCS
+row of `acceptance.py` (row 21) so it cannot go missing again.
+10. **Three of the four files were not the organisers' files.** `run.py` did not exist anywhere in the
+    repository; `.dogfood.toml` had Axion's own section names, so their checker could not have read it; and
+    the root `fixtures.json` was Axion's generated demo dataset wearing the organisers' filename. The
+    acceptance story in the earlier phases was therefore a story about Axion's own checks, told with the
+    brief's vocabulary. The published files are now vendored verbatim with their digests recorded.
+11. **The importer could not represent the dataset it advertised.** `uq_teams_name` refused the three teams
+    called "StillTrail" (and the repeated "OpenSignal" and "AmberSwitch"), so they merged into one row each
+    and their projects were attributed to the wrong team; `uq_submissions_team` refused `prj_41`, so the
+    deliberate duplicate silently collapsed and 41 projects became 40. The messy data the brief advertises
+    as the interesting part had never actually reached the database. Migration
+    `0006_imported_reality_is_partial` makes both rules partial — one **live** submission per team, and team
+    names unique **as created in this application** (`source_ref IS NULL`) — so the guarantees an organiser
+    depends on still hold for rows this app writes, while a dataset that arrives with repeated names and a
+    duplicate submission is imported as written. Both indexes are still enforced under concurrency, which is
+    what `api/tests/pg/test_concurrency.py` exercises.
+12. **In fixture mode the event on the page was not the event in the file.** The name came from `EVENT_NAME`
+    in `.env` ("Axion Demo Hackathon") and the window from an invented `2026-08-01 → 2026-08-04`, so the
+    portal announced an event that did not exist and enforced a deadline nobody had declared. In
+    `EVENT_SOURCE=fixtures` the dataset's own `name` and `submissions_close` are now authoritative, and an
+    explicit `EVENT_START`/`EVENT_END` does **not** override them — a value that could re-open an
+    already-closed event would make the acceptance result depend on local configuration rather than on the
+    code.
+13. **The manifest's `submit` route answered a page, not a refusal.** A `POST` with a JSON body to a closed
+    event returned a redirect to the browser's submission page — a `3xx`, which the checker counts as a
+    failure, and which told a client nothing. See the note after row 19 for the ordering fix.
+14. **`SEED_MODE=demo` seeded nothing.** The documented command in README.md for the crafted demo dataset
+    passed `SEED_MODE=demo EVENT_SOURCE=env`, and the container entrypoint only acted on `SEED_DEMO=true`,
+    `DOGFOOD_FIXTURE_MODE=true` or `SEED_MODE=fixtures`. An evaluator following the README got an open window
+    and an empty event that looked perfectly healthy. The entrypoint now reads `SEED_MODE` for both
+    datasets.
+15. **The seed is idempotent, so it will not repair a volume.** The first Compose run of this phase reported
+    `fixture seed skipped: an admin account already exists` and served a dataset left behind by an earlier
+    phase — the gallery returned Axion's demo tracks while the log above it described the organisers' file.
+    This is correct behaviour for a re-boot and a trap for an acceptance run, so row 17 starts from
+    `down -v`: the report is produced from a fresh volume or it is not produced.
+16. **Migration on SQLite is broken at `0001`, and stays broken.** Recorded rather than fixed: the project
+    migrates on PostgreSQL (which is what `alembic upgrade head` does in the container and in CI), and the
+    fast suite builds its schema with `create_all`. The database we ship is the one that migrates.

@@ -249,12 +249,12 @@ implies, that `peer_scores` names judge A and *not* judge B, and that the number
 `fixtures.json` holds. A rename in one place and not the other fails in CI.
 
 `api/scripts/selfcheck.toml` is **Axion's own** manifest, read by `api/scripts/dogfood_check.py` with the
-standard library: nineteen checks rather than their seven, including the blind gate, all three CSV exports,
+standard library: twenty-one checks rather than their seven, including the blind gate, all three CSV exports,
 the Z-score leaderboard and both sides of four role boundaries. It fetches signed bearer tokens from
 `GET /api/dev/checker-headers` so it stays valid on any machine, and the one write it attempts is *skipped*
 rather than sent when the event is open, so a read-only run cannot mutate what it measures.
 
-They are separate files and separate reports on purpose. Nineteen assertions of ours folded into the artefact
+They are separate files and separate reports on purpose. Twenty-one assertions of ours folded into the artefact
 the organisers read would blur the only line that matters in an acceptance report: who ran it.
 `api/scripts/acceptance.py` remains the third, tier-by-tier tool (T0–T4 plus bonus claims).
 

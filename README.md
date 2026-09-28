@@ -29,7 +29,7 @@ evaluation.
 | [fixtures.json](./fixtures.json) | The organisers' dataset, verbatim as published: 41 projects, 30 judges, 8 tracks |
 | [data/axion-fixtures.json](./data/axion-fixtures.json) | Axion's own generated dataset, which the demo numbers below were computed against |
 | [acceptance-report.txt](./acceptance-report.txt) | Their checker, their dataset, run against this portal and committed as printed |
-| [acceptance-report.selfcheck.txt](./acceptance-report.selfcheck.txt) | Axion's own deeper self-check: nineteen questions rather than their seven |
+| [acceptance-report.selfcheck.txt](./acceptance-report.selfcheck.txt) | Axion's own deeper self-check: twenty-one questions rather than their seven |
 | [acceptance-report.axion.txt](./acceptance-report.axion.txt) | The tier-by-tier suite (T0–T4 plus bonus claims), on the demo dataset |
 
 ## The four files the brief names
@@ -329,7 +329,7 @@ expected paths, so the claim cannot rot silently.
 run.py                    the organisers' acceptance checker, as published
 fixtures.json             the organisers' dataset, as published — what compose seeds
 acceptance-report.txt     their report, committed as printed
-acceptance-report.selfcheck.txt   Axion's own deeper check, nineteen questions
+acceptance-report.selfcheck.txt   Axion's own deeper check, twenty-one questions
 acceptance-report.axion.txt       the tier-by-tier suite, T0–T4 and the bonuses
 data/axion-fixtures.json  Axion's own generated dataset (the demo numbers)
 src/                      pointer: the code is api/ and web/ (see src/README.md)
@@ -343,7 +343,7 @@ api/                      FastAPI service — owns the database, all auth and al
   app/fixture_dialects.py translates both fixture dialects into one canonical shape
   app/access.py           the four literal checker credentials, and the gate on them
   app/routers/            auth, event, teams, submissions, judging, admin
-  scripts/selfcheck.toml  Axion's own deeper manifest (nineteen checks, not theirs)
+  scripts/selfcheck.toml  Axion's own deeper manifest (twenty-one checks, not theirs)
   scripts/dogfood_check.py  the checker that reads it
   scripts/acceptance.py   tier-by-tier acceptance runner
   alembic/                migrations (0001 initial … 0006 partial uniqueness)
@@ -397,7 +397,7 @@ cd web && npm ci && npm run typecheck && npm run build
 docker compose up --build
 python3 run.py .dogfood.toml > acceptance-report.txt
 
-# Axion's own deeper self-check, against the same instance: nineteen questions
+# Axion's own deeper self-check, against the same instance: twenty-one questions
 # rather than seven. Separate manifest, separate report, so nothing we assert
 # about ourselves can be mistaken for what was verified.
 python api/scripts/dogfood_check.py api/scripts/selfcheck.toml --out acceptance-report.selfcheck.txt

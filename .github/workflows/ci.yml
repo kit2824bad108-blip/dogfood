@@ -8,9 +8,10 @@
 #               only runs against PostgreSQL (constraints, trigger, concurrency)
 #   frontend    typecheck + production build (the app has no separate test runner)
 #   docker      both images build from a clean checkout
-#   acceptance  the manifest check that produces `acceptance-report.txt` is a gate,
-#               and the tier suite that produces `acceptance-report.axion.txt` runs
-#               against the same stack in demo mode
+#   acceptance  the organisers' own run.py is a gate, the committed report is
+#               re-derived and diffed against it, our deeper self-check runs
+#               against the same instance, and the tier suite runs last on the
+#               demo dataset (it needs an open window)
 name: CI
 
 on:
@@ -40,9 +41,13 @@ jobs:
           cache-dependency-path: api/requirements.txt
       - name: Install dependencies
         run: pip install -r api/requirements.txt
-      - name: Validate the fixture dataset
+      - name: Validate both fixture datasets
         working-directory: api
-        run: python scripts/validate_fixtures.py
+        # No argument means the organisers' file at the repository root. The second
+        # path is resolved against the repository root too, not against the cwd.
+        run: |
+          python scripts/validate_fixtures.py
+          python scripts/validate_fixtures.py data/axion-fixtures.json
       - name: Unit and integration tests (SQLite)
         working-directory: api
         run: python -m pytest -q -m "not postgres"
@@ -116,7 +121,7 @@ jobs:
         run: docker compose build
 
   acceptance:
-    name: Official acceptance (manifest check is a gate)
+    name: Official acceptance (their run.py is the gate)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -128,31 +133,57 @@ jobs:
       - name: Install dependencies
         run: pip install -r api/requirements.txt
       - name: Start the stack on the fixture dataset
-        # DOGFOOD_FIXTURE_MODE is one flag: seed fixtures.json, take the event
-        # window from it (already closed), and enable the checker's header
-        # credentials. No organiser manifest or external service is involved.
+        # DOGFOOD_FIXTURE_MODE is one flag: seed the organisers' fixtures.json, take
+        # the event window from it (already closed), and enable the checker's header
+        # credentials. `-v` first: the seed is idempotent, so an old volume would be
+        # served as-is and the report would describe a dataset this code did not load.
         env:
           DOGFOOD_FIXTURE_MODE: "true"
-        run: docker compose up -d --build
-      - name: Wait for readiness
+        run: |
+          docker compose down -v
+          docker compose up -d --build
+      - name: Wait for the portal (API and web)
+        # Their checker reads the web origin on :3000, so readiness of the API alone
+        # is not enough: the Next.js rewrite has to be answering too.
         run: |
           for attempt in $(seq 1 60); do
-            if curl -fsS http://127.0.0.1:8000/api/health/ready > /dev/null; then
-              echo "ready after ${attempt} attempt(s)"
+            if curl -fsS http://127.0.0.1:8000/api/health/ready > /dev/null \
+               && curl -fsS http://127.0.0.1:3000/api/gallery > /dev/null; then
+              echo "portal ready after ${attempt} attempt(s)"
               curl -sS http://127.0.0.1:8000/api/health/ready
               exit 0
             fi
             sleep 5
           done
-          echo "the API never became ready:" >&2
+          echo "the portal never became ready:" >&2
           docker compose logs api >&2
           exit 1
-      - name: Manifest-driven acceptance check (fails the job on any failed check)
-        run: python api/scripts/dogfood_check.py .dogfood.toml --out acceptance-report.txt
-      - name: Tier-by-tier suite (T0-T4)
+      - name: The organisers' acceptance checker, as published (the gate)
+        # run.py and fixtures.json are vendored byte-for-byte, so this is their
+        # program reading our manifest. Stdlib only: no dependency of ours is
+        # involved in the verdict.
+        run: |
+          python3 run.py .dogfood.toml | tee /tmp/their-report.txt
+          grep -qx 'claimed T1 T2, verified T1 T2' /tmp/their-report.txt
+      - name: The committed report still describes this code
+        # acceptance-report.txt is theirs, committed as printed. A fresh run that
+        # disagrees with it means the committed receipt has gone stale — which is a
+        # failure, not a formatting detail. CRLF is stripped, because the committed
+        # copy was produced on Windows.
+        run: |
+          tr -d '\r' < acceptance-report.txt | grep -E '^(T1|T2|claimed )' > /tmp/committed.lines
+          grep -E '^(T1|T2|claimed )' /tmp/their-report.txt > /tmp/fresh.lines
+          diff -u /tmp/committed.lines /tmp/fresh.lines
+      - name: Axion's own deeper self-check (twenty-one checks)
+        run: python api/scripts/dogfood_check.py api/scripts/selfcheck.toml \
+          --out acceptance-report.selfcheck.txt
+      - name: Tier-by-tier suite (T0-T4) on the demo dataset
+        # It needs an open window: it registers a participant, creates a team and
+        # submits a project, none of which is possible into an event that closed on
+        # 2026-03-01. Hence the second stack, on the crafted demo dataset.
         run: |
           docker compose down -v
-          docker compose up -d --build
+          SEED_MODE=demo EVENT_SOURCE=env docker compose up -d --build
           for attempt in $(seq 1 60); do
             curl -fsS http://127.0.0.1:8000/api/health/ready > /dev/null && break
             sleep 5
@@ -164,7 +195,8 @@ jobs:
         with:
           name: acceptance-reports
           path: |
-            acceptance-report.txt
+            /tmp/their-report.txt
+            acceptance-report.selfcheck.txt
             acceptance-report.axion.txt
           if-no-files-found: warn
       - name: Container logs on failure

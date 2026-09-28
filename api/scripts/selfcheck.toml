@@ -3,12 +3,12 @@
 #
 # This is NOT the DOGFOOD acceptance manifest. The organisers' manifest is at the
 # repository root (`.dogfood.toml`, read by their `run.py`, seven checks) and that
-# file is the one their suite reads. This one asks nineteen questions instead of
+# file is the one their suite reads. This one asks twenty-one questions instead of
 # seven — the blind gate, the exports, the Z-score leaderboard, anonymous
 # boundaries — because a project should be able to check more than it is graded on.
 #
 # Do not merge the two. A claim verified only by its author is not evidence, and
-# folding nineteen of our own assertions into the artefact the organisers read
+# folding twenty-one of our own assertions into the artefact the organisers read
 # would blur exactly that line.
 #
 #   python api/scripts/dogfood_check.py api/scripts/selfcheck.toml \

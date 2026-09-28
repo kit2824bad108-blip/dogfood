@@ -681,20 +681,42 @@ def run_checks(suite: Suite) -> None:
 
     @suite.check("DOCS", "Required files exist")
     def _() -> tuple[str, str]:
-        # acceptance-report.txt is deliberately absent from this list: it is the
-        # artefact this very run produces, so requiring it would be circular.
+        # The brief prints its own root listing, and every line of it is a
+        # deliverable: the two files the organisers judge this repository by (the
+        # manifest and the report), the two they published (the checker and the
+        # dataset), the four documents, the licence, and the two trees.
         required = [
+            ".dogfood.toml",
+            "acceptance-report.txt",
+            "run.py",
+            "fixtures.json",
+            "docker-compose.yml",
             "README.md",
             "ARCHITECTURE.md",
             "DATA-MODEL.md",
             "JUDGING.md",
             "THREAT-MODEL.md",
-            "docker-compose.yml",
+            "DEMO.md",
+            "LICENSE",
             ".env.example",
         ]
+        directories = ["src", "tests", "api", "web", "spec", "data"]
         missing = [name for name in required if not (REPO_ROOT / name).exists()]
+        missing += [name + "/" for name in directories if not (REPO_ROOT / name).is_dir()]
         assert not missing, f"missing: {missing}"
-        return PASS, f"present: {', '.join(required)}"
+
+        # `acceptance-report.txt` is in the list above even though this suite does
+        # not produce it: it is produced by the organisers' own `run.py` and
+        # committed, so its presence is evidence rather than circularity — but its
+        # *content* is no business of ours. What the brief names as a
+        # disqualifier, an absent or non-OSI licence, is checked here.
+        licence = (REPO_ROOT / "LICENSE").read_text(encoding="utf-8").lower()
+        for marker in ("mit license", "permission is hereby granted"):
+            assert marker in licence, f"LICENSE does not look like the MIT licence ({marker!r})"
+        return PASS, (
+            f"{len(required)} files and {len(directories)} directories present, per the brief's "
+            f"root listing; LICENSE is MIT"
+        )
 
     @suite.check("DOCS", "Documentation covers what it claims to")
     def _() -> tuple[str, str]:
