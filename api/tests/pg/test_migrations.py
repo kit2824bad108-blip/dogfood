@@ -42,8 +42,11 @@ APP_TABLES = {
     "webhook_endpoints",
     "webhook_deliveries",
     "participation_records",
+    # T2: judge onboarding via invite links
+    "invite_tokens",
 }
 EXPECTED_CHAIN = [
+    "0009_judge_invites",
     "0008_webhooks_and_records",
     "0007_community_surface",
     "0006_imported_reality_is_partial",

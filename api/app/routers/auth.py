@@ -6,6 +6,7 @@ HttpOnly session cookie, so every other router sees a single identity model.
 """
 from __future__ import annotations
 
+import hashlib
 import secrets
 
 import httpx
@@ -18,8 +19,8 @@ from .. import audit
 from ..config import settings
 from ..db import get_db
 from ..deps import client_ip, optional_user
-from ..models import User
-from ..schemas import DevLoginRequest, LoginRequest, RegisterRequest
+from ..models import InviteToken, User
+from ..schemas import AcceptInviteRequest, DevLoginRequest, LoginRequest, RegisterRequest
 from ..security import hash_password, sign_session, verify_password
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -327,3 +328,105 @@ def github_callback(
     _set_session(redirect, user.id)
     redirect.delete_cookie(OAUTH_STATE_COOKIE, path="/")
     return redirect
+
+
+# ── Judge invite acceptance ──────────────────────────────────────────────────
+
+INVITE_TOKEN_DIGEST_COOKIE = "axion_invite_token"
+
+
+def _invite_digest(raw: str) -> str:
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def _lookup_invite(db: Session, raw_token: str) -> InviteToken:
+    """Locate a pending invite token; raise 404/410 if missing/expired/used."""
+    from datetime import datetime, timezone
+
+    digest = _invite_digest(raw_token)
+    invite = db.scalar(select(InviteToken).where(InviteToken.token_digest == digest))
+    if invite is None:
+        raise HTTPException(status_code=404, detail="Invite link not found")
+    if invite.used_at is not None:
+        raise HTTPException(status_code=410, detail="This invite link has already been used")
+    now = datetime.now(timezone.utc)
+    if invite.expires_at < now:
+        raise HTTPException(status_code=410, detail="This invite link has expired")
+    return invite
+
+
+@router.get("/accept-invite")
+def check_invite(token: str, db: Session = Depends(get_db)) -> dict:
+    """Validate an invite token without consuming it.
+
+    The front-end calls this when the invitee first opens the link, so the page
+    can show the target email and expiry before asking for a name and password.
+    """
+    invite = _lookup_invite(db, token)
+    return {
+        "valid": True,
+        "email": invite.email,
+        "expires_at": invite.expires_at.isoformat(),
+    }
+
+
+@router.post("/accept-invite")
+def accept_invite(
+    payload: AcceptInviteRequest,
+    request: Request,
+    response: Response,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Claim an invite link and create (or upgrade) a judge account.
+
+    On success the response body contains the new user record and a session
+    cookie is set, so the invitee is immediately signed in.
+    """
+    from datetime import datetime, timezone
+
+    invite = _lookup_invite(db, payload.token)
+
+    # Find or create the user. An existing participant is upgraded; an existing
+    # judge just gets a refreshed password so they can use the link to recover
+    # access. An existing admin is left unchanged (admins do not need a judge
+    # invite, and silently downgrading would be surprising).
+    user = db.scalar(select(User).where(User.email == invite.email))
+    if user is not None and user.role == "admin":
+        raise HTTPException(
+            status_code=409,
+            detail="An organiser account already exists for this email — log in normally",
+        )
+
+    new_password_hash = hash_password(payload.password)
+    if user is None:
+        user = User(
+            email=invite.email,
+            name=payload.name.strip(),
+            role="judge",
+            password_hash=new_password_hash,
+        )
+        db.add(user)
+    else:
+        user.role = "judge"
+        user.name = payload.name.strip() or user.name
+        user.password_hash = new_password_hash
+
+    db.flush()
+
+    # Mark the token consumed before committing, so a second concurrent request
+    # with the same token sees used_at already set.
+    invite.used_at = datetime.now(timezone.utc)
+
+    audit.record(
+        db,
+        "judge.invite_accepted",
+        actor=user,
+        entity="user",
+        entity_id=user.id,
+        ip=client_ip(request),
+        details={"email": invite.email, "invited_by": invite.invited_by},
+    )
+    db.commit()
+
+    _set_session(response, user.id)
+    return {"authenticated": True, "user": public_user(user)}

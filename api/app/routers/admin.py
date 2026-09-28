@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
+import secrets
+from datetime import timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, PlainTextResponse
@@ -16,6 +19,7 @@ from ..deps import client_ip, require_role
 from ..models import (
     Assignment,
     AuditLog,
+    InviteToken,
     Prize,
     Rubric,
     Score,
@@ -25,7 +29,7 @@ from ..models import (
     Track,
     User,
 )
-from ..schemas import JudgeCreateRequest, PrizeCreateRequest, RubricUpdateRequest, TrackCreateRequest
+from ..schemas import JudgeCreateRequest, JudgeInviteRequest, PrizeCreateRequest, RubricUpdateRequest, TrackCreateRequest
 from ..security import hash_password
 from ..timeutil import iso
 from ..services import (
@@ -289,6 +293,60 @@ def create_judge(
     )
     db.commit()
     return {"judge": {"id": judge.id, "email": judge.email, "name": judge.name}, "assigned": assigned}
+
+
+def _token_digest(raw: str) -> str:
+    """SHA-256 hex digest of a raw invite token. Only this goes in the DB."""
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+@router.post("/judges/invite")
+def invite_judge(
+    payload: JudgeInviteRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role(*ADMIN_ROLES)),
+) -> dict:
+    """Generate a one-time judge onboarding link.
+
+    The organiser provides an email address; the API returns a single-use URL
+    containing a random token. The invitee follows the URL, chooses a name and
+    password, and the account is created (or upgraded to judge role). The raw
+    token is returned once and never stored; only its SHA-256 digest is kept.
+    """
+    from datetime import datetime
+
+    raw_token = secrets.token_urlsafe(32)
+    digest = _token_digest(raw_token)
+    now = datetime.now(timezone.utc)
+    expires_at = now + timedelta(hours=payload.expires_hours)
+
+    invite = InviteToken(
+        token_digest=digest,
+        email=payload.email.strip().lower(),
+        invited_by=user.email,
+        expires_at=expires_at,
+    )
+    db.add(invite)
+    audit.record(
+        db,
+        "judge.invite_generated",
+        actor=user,
+        entity="invite_token",
+        ip=client_ip(request),
+        details={"email": payload.email, "expires_hours": payload.expires_hours},
+    )
+    db.commit()
+
+    invite_url = (
+        f"{settings.web_url}/judge/accept-invite?token={raw_token}"
+    )
+    return {
+        "invite_url": invite_url,
+        "token": raw_token,
+        "email": invite.email,
+        "expires_at": expires_at.isoformat(),
+    }
 
 
 @router.post("/assignments/backfill")

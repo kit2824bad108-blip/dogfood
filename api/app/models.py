@@ -613,7 +613,36 @@ class ParticipationRecord(Base):
     revoked_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
 
+class InviteToken(Base):
+    """One-time judge-onboarding token.
+
+    The organiser generates the token; the invitee follows the link, chooses a
+    name and password, and the account is created (or upgraded) with role=judge.
+
+    Only the SHA-256 digest of the raw token is stored: a database leak cannot be
+    replayed, and the invitee's browser is the only thing that ever sees the raw
+    value — the same guarantee as a password-reset link.
+    """
+
+    __tablename__ = "invite_tokens"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # SHA-256 hex digest of the raw token the organiser was given.
+    token_digest: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    email: Mapped[str] = mapped_column(String(255), index=True)
+    # Who generated it (audit trail, not a FK — we want the email even if the
+    # organiser account is later removed).
+    invited_by: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    # Tokens are single-use and expire.
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class ThrottleEvent(Base):
+
     """One rate-limited attempt. See `app/throttle.py` for why it is a table.
 
     `at_epoch` is an integer rather than a datetime on purpose: SQLite and

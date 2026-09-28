@@ -223,3 +223,36 @@ class JudgeCreateRequest(BaseModel):
         if not EMAIL_RE.match(value):
             raise ValueError("Enter a valid email address")
         return value
+
+
+class JudgeInviteRequest(BaseModel):
+    """Organiser request to generate a judge invite link.
+
+    The returned token is single-use and expires in `expires_hours` hours
+    (default 72). The invitee follows the link, picks a name and password, and
+    their account is created (or an existing participant account is upgraded)
+    with role=judge.
+    """
+
+    email: str = Field(min_length=3, max_length=255)
+    expires_hours: int = Field(default=72, ge=1, le=720)
+
+    @field_validator("email")
+    @classmethod
+    def valid_email(cls, value: str) -> str:
+        value = value.strip().lower()
+        if not EMAIL_RE.match(value):
+            raise ValueError("Enter a valid email address")
+        return value
+
+
+class AcceptInviteRequest(BaseModel):
+    """Invitee request to claim a judge invite link.
+
+    The raw token from the URL's `?token=` query parameter, plus the name and
+    password the new judge wants to use.
+    """
+
+    token: str = Field(min_length=16, max_length=200)
+    name: str = Field(min_length=1, max_length=255)
+    password: str = Field(min_length=8, max_length=200)
