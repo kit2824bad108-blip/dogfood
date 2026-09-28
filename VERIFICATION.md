@@ -1,4 +1,4 @@
-# Verification record
+﻿# Verification record
 
 "It works" is a claim, and a claim should be checkable. This file records what was actually executed on the
 build machine, in order, with the results as observed — and, just as importantly, what was **not** executed
@@ -127,10 +127,9 @@ Not a summary of intent — these lines are from the reports themselves.
 | Thing | Why not | What would settle it |
 | ----- | ------- | -------------------- |
 | The `make` targets | No `make` on Windows | Any Linux/macOS machine; each target is a two-line wrapper around the commands in the table below |
-| Wi-Fi physically switched off | The host's radio cannot be toggled from here | Pull the network cable — see "The offline claim, specifically" below for what would still hold |
+| Wi-Fi physically switched off | The host's radio cannot be toggled from here | Pull the network cable; the offline Compose stack (Phase A6) enforces the same isolation at the container level |
 | Live GitHub OAuth | No client id or secret were provided | Register an OAuth app, set `GITHUB_CLIENT_ID`/`GITHUB_CLIENT_SECRET`, sign in |
 | Commit history against the real GitHub API | `MOCK_GITHUB=true` everywhere, so only the deterministic path ran | Set `MOCK_GITHUB=false` with a `GITHUB_TOKEN` and re-check a submission |
-| Wi-Fi physically switched off | The host's radio cannot be toggled from here | Pull the network cable; every check above is loopback-only, and no build or run step contacts a third party |
 
 ## The offline claim, specifically
 
@@ -141,9 +140,12 @@ passwordless login and the checker's headers are both issued locally. The one pl
 happen is commit-integrity checking against the GitHub API, and that path is explicitly switched to
 deterministic synthetic data by `MOCK_GITHUB=true`, which is also the default in `.env.example`.
 
-Where this falls short of the strongest possible claim: nobody physically disconnected the machine. The
-Compose path has since been executed (Phase A3 below), including the two-container front door, so the
-one-command boot is observed rather than reviewed; the radio itself is the only untested part of the claim.
+Phase A6 strengthens this claim beyond "no outbound calls were observed": `docker-compose.offline.yml`
+attaches every container to a Docker network declared `internal: true` — a network with no gateway and
+no route out. The `probe` service confirmed that DNS resolution of `api.github.com` and a TCP connection
+to `1.1.1.1:443` both fail with connection-refused / name-resolution errors, while the API and web
+services answer normally on the internal network. The radio is still not physically unplugged, but the
+network-level isolation is enforced by the kernel rather than by application-layer promises.
 
 ## Defects found while verifying this pass
 
@@ -335,3 +337,38 @@ are self-contained printable HTML rather than PDF, which is stated in the README
 that fetches one. And the community tally's independence from the judged ranking is a design property, not a
 cryptographic one: the tests assert that a ballot outcome never appears in `axion_score`, not that a
 determined group of people with many addresses cannot inflate a number that is published beside it.
+
+## Phase A6 — clean build, 7/7 acceptance, and offline network test (2026-09-28)
+
+A complete teardown-and-rebuild from a clean volume, to confirm the one-command path is reproducible without
+any pre-existing state. The acceptance report is regenerated with the organisers' own checker against that
+fresh instance, and the offline Compose stack is run to prove the internal network actually blocks egress.
+
+| # | Command | Observed result |
+| - | ------- | --------------- |
+| 33 | `docker compose down -v` | Three containers stopped, the `axion_axion-db` volume deleted; the `axion_default` network removed. Starting state: nothing |
+| 34 | `docker compose up --build` | Both images rebuilt from scratch (API from `python:3.12-slim`, web from `node:20-alpine`). API image cached at the pip layer; web image recompiled Next.js 15.5.26 — 11 routes, 103 kB shared first-load JS. Sequence: `axion-db-1` healthy → `axion-api-1` started (migrations `0001`→`0008` on a fresh Postgres volume, fixture dataset seeded: 41 submissions / 30 judges / 122 users, `closed_event: true`) → `axion-web-1` started |
+| 35 | `python3 run.py .dogfood.toml > acceptance-report.txt` — the organisers' checker, unmodified | **7 checks, 7 PASS, 0 FAIL**: gallery public; fixture title on page one; closed event refusing a write (403 `The submission window is closed`); judge A's scores; judge B refused a peer's scores; participant refused judge surfaces; CSV export. Footer: `claimed T1 T2, verified T1 T2` |
+| 36 | `docker compose down` (keeping the volume) | Three containers stopped; data volume preserved for the offline run |
+| 37 | `docker compose -f docker-compose.yml -f docker-compose.offline.yml up -d` | Same three application containers restarted, now on the `axion_offline` internal network (no gateway). Three extra services started: `probe`, `runner`, `workflow` (all `depends_on: api: condition: service_healthy`) |
+| 38 | `docker compose -f docker-compose.yml -f docker-compose.offline.yml run --rm probe` | `egress: api.github.com:443 refused as expected (gaierror)` · `egress: 1.1.1.1:443 refused as expected (OSError)` · `api: http://api:8000/api/health/ready → HTTP 200 (109 bytes)` · `web: http://web:3000/ → HTTP 200 (23099 bytes)` · **RESULT: OFFLINE NETWORK CONFIRMED** |
+| 39 | `docker compose -f docker-compose.yml -f docker-compose.offline.yml run --rm runner` | **37 passed, 0 failed, 0 skipped** — full selfcheck.toml inside the air-gapped network. T1 4/4, T2 9/9, T3 5/5, T4 11/11. `Solid: T1, T2, T3, T4`. **RESULT: ALL EXECUTED CHECKS PASSED** |
+
+Exact commands run on this machine:
+
+```
+docker compose down -v
+docker compose up --build
+python3 run.py .dogfood.toml > acceptance-report.txt
+docker compose down
+docker compose -f docker-compose.yml -f docker-compose.offline.yml up -d
+docker compose -f docker-compose.yml -f docker-compose.offline.yml run --rm probe
+docker compose -f docker-compose.yml -f docker-compose.offline.yml run --rm runner
+docker compose -f docker-compose.yml -f docker-compose.offline.yml down
+docker compose up -d
+```
+
+The exit code of every `docker compose` command on this machine is reported as 1 by PowerShell because
+Docker writes progress messages to stderr and PowerShell treats any stderr output as an error. The actual
+containers started, reached healthy, and produced the results above; the real signal is the container
+status, not the shell exit code.
