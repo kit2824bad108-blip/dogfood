@@ -59,6 +59,11 @@ EVENT_VOTE_CAST = "vote.cast"
 EVENT_COMMENT_CREATED = "comment.created"
 EVENT_DUPLICATE_CONFIRMED = "duplicate.confirmed"
 EVENT_EVENT_ARCHIVED = "event.archived"
+# The one event about the event itself: a deadline moved, or the clock handed back
+# to the deployment's configuration. A subscriber's status board has as much need
+# of this as of a submission, and finding out by watching a submission bounce is
+# not how a team should learn that the deadline moved.
+EVENT_SETTINGS_UPDATED = "event.settings_updated"
 EVENT_WEBHOOK_TEST = "webhook.test"
 
 EVENT_CATALOGUE: dict[str, str] = {
@@ -71,6 +76,7 @@ EVENT_CATALOGUE: dict[str, str] = {
     EVENT_COMMENT_CREATED: "Someone commented on a project.",
     EVENT_DUPLICATE_CONFIRMED: "An organiser confirmed a suspected duplicate. Nothing was deleted.",
     EVENT_EVENT_ARCHIVED: "The results bundle was generated.",
+    EVENT_SETTINGS_UPDATED: "An organiser changed the event's window or identity.",
     EVENT_WEBHOOK_TEST: "A test delivery an organiser triggered from the console.",
 }
 

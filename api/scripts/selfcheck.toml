@@ -3,10 +3,11 @@
 #
 # This is NOT the DOGFOOD acceptance manifest. The organisers' manifest is at the
 # repository root (`.dogfood.toml`, read by their `run.py`, seven checks) and that
-# file is the one their suite reads. This one asks thirty-eight questions instead of
+# file is the one their suite reads. This one asks forty questions instead of
 # seven — the blind gate, the exports, the Z-score leaderboard, the community
-# surface, the webhook outbox, signed records, the bundle, anonymous boundaries —
-# because a project should be able to check more than it is graded on.
+# surface, the organiser's clock, the webhook outbox, signed records, the bundle,
+# anonymous boundaries — because a project should be able to check more than it is
+# graded on.
 #
 # Do not merge the two. A claim verified only by its author is not evidence, and
 # folding thirty-eight of our own assertions into the artefact the organisers read
@@ -255,6 +256,41 @@ group = "T3"
 name = "Project comment threads are public"
 method = "GET"
 path = "/api/submissions/{submission_id}/comments"
+role = "public"
+expect = 200
+
+# The event's own dates are a control, not a constant. The check is that the
+# console and the public payload describe *the same* clock: an organiser who moves
+# the deadline must not be looking at a screen that disagrees with the one a
+# participant is refused by.
+[[checks]]
+id = "event_clock_agrees_with_the_public_payload"
+group = "T3"
+name = "The console's event clock is the clock the public event payload publishes"
+method = "GET"
+path = "/api/admin/event"
+role = "organizer"
+expect = 200
+
+[[checks]]
+id = "event_clock_denied"
+group = "T3"
+name = "A participant cannot read or move the event clock"
+method = "GET"
+path = "/api/admin/event"
+role = "participant"
+expect = 403
+
+# Two clocks, published side by side. The submission deadline is about when work
+# stops; the ballot window is about when the crowd stops counting, and an event is
+# entitled to place them differently — which is only observable if both are on the
+# wire rather than one being derived in the browser.
+[[checks]]
+id = "event_two_clocks"
+group = "T3"
+name = "The submission window and the community window are published separately"
+method = "GET"
+path = "/api/event"
 role = "public"
 expect = 200
 

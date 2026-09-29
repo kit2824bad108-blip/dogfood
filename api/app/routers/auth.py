@@ -16,6 +16,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .. import audit
+from .. import eventconfig
 from ..config import settings
 from ..db import get_db
 from ..deps import client_ip, optional_user
@@ -79,11 +80,14 @@ def me(user: User | None = Depends(optional_user)) -> dict:
 
 @router.get("/status")
 def auth_status(db: Session = Depends(get_db)) -> dict:
+    # The shell's sign-in screen names the event it is signing you into, so it
+    # reads the effective clock rather than the configured one.
+    clock = eventconfig.active(db)
     return {
         "github_oauth_enabled": settings.github_oauth_enabled,
-        "event_name": settings.event_name,
-        "event_start": settings.event_start.isoformat(),
-        "event_end": settings.event_end.isoformat(),
+        "event_name": clock.name,
+        "event_start": clock.starts_at.isoformat(),
+        "event_end": clock.ends_at.isoformat(),
         "mock_github": settings.mock_github,
         "local_dev_login": settings.local_dev_login,
         # Emails only — the shared demo password is documented in the README and

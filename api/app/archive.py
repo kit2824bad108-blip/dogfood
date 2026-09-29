@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from . import zscore
-from .config import settings
+from . import eventconfig
 from .models import Assignment, AuditLog, Score, Submission, Team, TeamMember, Track, User
 
 BUNDLE_VERSION = 1
@@ -32,6 +32,7 @@ def _records(db: Session) -> list[zscore.ScoreRecord]:
 
 def build_bundle(db: Session) -> dict:
     records = _records(db)
+    clock = eventconfig.active(db)
 
     teams = {team.id: team for team in db.scalars(select(Team)).all()}
     all_submissions = db.scalars(select(Submission)).all()
@@ -114,9 +115,14 @@ def build_bundle(db: Session) -> dict:
         "bundle_version": BUNDLE_VERSION,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "event": {
-            "name": settings.event_name,
-            "starts_at": settings.event_start.isoformat(),
-            "ends_at": settings.event_end.isoformat(),
+            "name": clock.name,
+            "starts_at": clock.starts_at.isoformat(),
+            "ends_at": clock.ends_at.isoformat(),
+            "voting_opens_at": clock.voting_opens_at.isoformat(),
+            "voting_closes_at": clock.voting_closes_at.isoformat(),
+            # Where the window came from: an archive generated after an organiser
+            # moved the deadline must say so, or the dates in it are unattributable.
+            "source": clock.source,
         },
         "methodology": {
             "aggregation": "mean of per-judge z-scores",

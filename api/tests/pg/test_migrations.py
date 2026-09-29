@@ -44,8 +44,11 @@ APP_TABLES = {
     "participation_records",
     # T2: judge onboarding via invite links
     "invite_tokens",
+    # The organiser's clock: zero or one row, and the checkout can move it
+    "event_settings",
 }
 EXPECTED_CHAIN = [
+    "0010_event_settings",
     "0009_judge_invites",
     "0008_webhooks_and_records",
     "0007_community_surface",

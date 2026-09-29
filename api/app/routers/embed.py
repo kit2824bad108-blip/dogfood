@@ -26,6 +26,7 @@ from fastapi import APIRouter, Depends, Query, Request, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .. import eventconfig
 from ..config import settings
 from ..db import get_db
 from ..models import Submission, Team, Track
@@ -72,6 +73,7 @@ def gallery(
     db: Session = Depends(get_db),
 ) -> Response:
     """The gallery as an iframe-ready document."""
+    event_name = eventconfig.active(db).name
     rows = _rows(db, track, limit)
     cards = "\n".join(
         f"""    <li class="card">
@@ -95,7 +97,7 @@ def gallery(
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{html.escape(settings.event_name)} — projects</title>
+<title>{html.escape(event_name)} — projects</title>
 <style>
   :root {{ color-scheme: {theme}; }}
   body {{ margin: 0; padding: 16px; background: {background}; color: {foreground};
@@ -117,7 +119,7 @@ def gallery(
 </head>
 <body>
   <header>
-    <h1>{html.escape(settings.event_name)}</h1>
+    <h1>{html.escape(event_name)}</h1>
     <p>{len(rows)} project{'' if len(rows) == 1 else 's'}{f' · {html.escape(track)}' if track else ''}</p>
   </header>
   <ul>
@@ -147,14 +149,16 @@ def snippet(
     limit: int = Query(default=24, ge=1, le=200),
     theme: str = Query(default="light", pattern="^(light|dark)$"),
     height: int = Query(default=520, ge=180, le=2000),
+    db: Session = Depends(get_db),
 ) -> dict:
     """The exact markup to paste, built from the origin the caller reached us on."""
     query = f"?limit={limit}&theme={theme}" + (f"&track={track}" if track else "")
     origin = settings.web_url or str(request.base_url).rstrip("/")
     src = f"{origin}/api/embed/gallery{query}"
+    event_name = eventconfig.active(db).name
     return {
         "iframe": (
-            f'<iframe src="{src}" title="{settings.event_name} projects" '
+            f'<iframe src="{src}" title="{event_name} projects" '
             f'width="100%" height="{height}" loading="lazy" '
             f'style="border:1px solid #dbe8e4;border-radius:12px"></iframe>'
         ),

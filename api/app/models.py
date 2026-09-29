@@ -663,3 +663,48 @@ class ThrottleEvent(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+
+class EventSettings(Base):
+    """The organiser's clock: **zero or one row**, never more (T3).
+
+    Until this exists the event identity and window come from the deployment's
+    configuration (`EVENT_*`, or the dataset when `EVENT_SOURCE=fixtures`) — which
+    is the right default, because a fresh `docker compose up` has to start closed
+    for the acceptance brief's "a closed event refuses submissions" check, and a
+    container must not need a console visit before it behaves.
+
+    A row means an organiser has taken the clock over. The singleton is enforced
+    by the database rather than by convention: two rows would be two deadlines,
+    and "which one is real" is not a question a portal should be able to ask.
+    Everything else the console needs — revision for optimistic concurrency, the
+    actor, the note, the timestamp — is here so that a deadline change is a
+    recorded act rather than an edit somebody made.
+    """
+
+    __tablename__ = "event_settings"
+    __table_args__ = (
+        CheckConstraint("id = 1", name="ck_event_settings_singleton"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(255))
+    starts_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    ends_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    voting_opens_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    voting_closes_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    # Why the clock moved. Recorded next to the window because "the deadline was
+    # extended" and "the deadline was extended because the venue flooded" are
+    # different facts to a participant reading the change after the fact.
+    note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Incremented on every write; the console sends the revision it read, and a
+    # mismatch is a 409 rather than a silent overwrite of somebody else's edit.
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    updated_by_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    updated_by_email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )

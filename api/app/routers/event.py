@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from ..config import settings
 from ..db import get_db
-from .. import voting
+from .. import eventconfig, voting
 from ..models import Assignment, Comment, Score, Submission, Team, Track, User, Vote
 from ..services import (
     active_rubric,
@@ -37,7 +37,8 @@ GALLERY_LIMIT = 200
 @router.get("/event")
 def public_event(db: Session = Depends(get_db)) -> dict:
     """One call that gives the shell everything the landing page needs."""
-    window = event_window()
+    clock = eventconfig.active(db)
+    window = event_window(db)
     rubric = active_rubric(db)
 
     submitted = db.scalar(
@@ -51,10 +52,18 @@ def public_event(db: Session = Depends(get_db)) -> dict:
     ) or 0
 
     criteria = normalized_criteria(rubric)
-    community_window = voting.voting_window()
+    community_window = voting.voting_window(db)
     return {
         "event": {
-            "name": settings.event_name,
+            # The effective name, so a renamed event is renamed everywhere the
+            # participant looks — the header, the certificate and the deadline
+            # banner are all resolved from the same clock.
+            "name": clock.name,
+            # True once an organiser has taken the window over. Published because
+            # "the deadline moved" is a fact about the event that the people bound
+            # by it are entitled to see without being told out of band.
+            "window_revised": clock.organiser_set,
+            "window_source": clock.source,
             "starts_at": window["opens_at"],
             "ends_at": window["closes_at"],
             "phase": "upcoming" if window["not_yet_open"] else ("closed" if window["closed"] else "open"),
@@ -211,7 +220,7 @@ def project_detail(submission_id: int, db: Session = Depends(get_db)) -> dict:
 
     team = db.get(Team, submission.team_id)
     track = db.get(Track, submission.track_id) if submission.track_id else None
-    window = voting.voting_window()
+    window = voting.voting_window(db)
 
     comment_count = db.scalar(
         select(func.count(Comment.id)).where(

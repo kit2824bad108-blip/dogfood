@@ -171,20 +171,36 @@ def test_revocation_is_a_dated_fact_beside_the_signature_not_an_edit(client, mak
 
 
 def test_the_verification_key_is_published_only_after_the_event_closes(client, make_user, auth, db, monkeypatch):
+    """The gate is the *effective* clock, so the test moves the clock itself.
+
+    That is `app.config.settings` rather than a module-level copy in `records`:
+    the publication rule reads the window through `app/eventconfig.py`, which is
+    the one place that decides whether the configured deadline or an organiser's
+    row is in force. Patching a copy would have kept this test green while the API
+    stopped honouring the clock — which is precisely the failure mode it exists to
+    catch.
+    """
+    from app import eventconfig
+
     as_admin(client, make_user, auth)
     code = issue(client)["issued"][0]["code"]
     now = datetime.now(timezone.utc)
 
-    still_running = replace(config.settings, event_end=now + timedelta(hours=6))
-    monkeypatch.setattr(records, "settings", still_running)
+    def _move(end: datetime):
+        moved = replace(config.settings, event_end=end)
+        monkeypatch.setattr(config, "settings", moved)
+        monkeypatch.setattr(records, "settings", moved)
+        eventconfig.reset_cache()
+        return moved
+
+    _move(now + timedelta(hours=6))
     open_key = client.get(f"/api/records/{code}").json()["key"]
     assert open_key["published"] is False
     assert open_key["key"] is None
     assert "still running" in open_key["reason"]
     assert open_key["fingerprint"] == records.key_fingerprint()
 
-    closed = replace(config.settings, event_end=now - timedelta(minutes=1))
-    monkeypatch.setattr(records, "settings", closed)
+    _move(now - timedelta(minutes=1))
     published = client.get(f"/api/records/{code}").json()["key"]
     assert published["published"] is True
     assert published["key"] == config.settings.record_signing_key

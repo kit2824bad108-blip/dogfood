@@ -43,7 +43,7 @@ from typing import Optional
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from . import services
+from . import eventconfig, services
 from .config import settings
 from .models import Assignment, ParticipationRecord, Score, Submission, Team, TeamMember, Track, User
 from .timeutil import iso
@@ -73,9 +73,14 @@ def key_fingerprint() -> str:
     return hashlib.sha256(signing_key().encode("utf-8")).hexdigest()[:16]
 
 
-def key_publication() -> dict:
-    """Whether the verification key may be published, and why."""
-    published = settings.records_verifiable_publicly
+def key_publication(db: Optional[Session] = None) -> dict:
+    """Whether the verification key may be published, and why.
+
+    The gate follows the *effective* event clock, so an organiser who moves the
+    close is also the person who publishes or withholds the key — and the console
+    says so before the change is applied.
+    """
+    published = eventconfig.records_verifiable_publicly(db)
     return {
         "algorithm": ALGORITHM,
         "fingerprint": key_fingerprint(),
@@ -146,7 +151,10 @@ def issue(
             "email": subject_email,
             "role": role,
         },
-        "event": {"name": event_name or settings.event_name, "deployment": settings.web_url},
+        "event": {
+            "name": event_name or eventconfig.active(db).name,
+            "deployment": settings.web_url,
+        },
         "summary": summary or {},
         "issued_at": iso(issued_at),
         "issued_by": actor.email if actor else "seed",
@@ -357,7 +365,7 @@ def issue_for_event(
             "Records are never re-issued: a signed statement about a moment would be "
             "invalidated everywhere it was already cited. Revoke and issue a new one."
         ),
-        "key": key_publication(),
+        "key": key_publication(db),
     }
 
 
@@ -399,7 +407,9 @@ def serialize(record: ParticipationRecord, *, include_payload: bool = True) -> d
     return row
 
 
-def verification_report(record: ParticipationRecord, *, public: bool = True) -> dict:
+def verification_report(
+    record: ParticipationRecord, *, public: bool = True, db: Optional[Session] = None
+) -> dict:
     """The answer a verifier gets: the record, the check, and the key material."""
     check = verify(record)
     return {
@@ -409,9 +419,9 @@ def verification_report(record: ParticipationRecord, *, public: bool = True) -> 
             # A public verifier is told which key was used and how to get it; the key
             # itself is only readable once the event has closed (see key_publication).
             "key_fingerprint": key_fingerprint(),
-            "key_available": settings.records_verifiable_publicly,
+            "key_available": eventconfig.records_verifiable_publicly(db),
         },
-        "key": key_publication() if public else None,
+        "key": key_publication(db) if public else None,
         "revocation": {
             "revoked": record.revoked_at is not None,
             "reason": record.revoked_reason,

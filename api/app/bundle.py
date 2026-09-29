@@ -33,6 +33,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from . import services, voting
+from . import eventconfig
 from .config import settings
 from .models import (
     Assignment,
@@ -263,13 +264,11 @@ def export_bundle(db: Session, *, include_community: bool = True) -> dict:
         "bundle_version": BUNDLE_VERSION,
         "generated_at": _now().isoformat(),
         "generated_by": settings.web_url,
-        "event": {
-            "name": settings.event_name,
-            "starts_at": settings.event_start.isoformat(),
-            "ends_at": settings.event_end.isoformat(),
-            "voting_opens_at": settings.voting_start.isoformat(),
-            "voting_closes_at": settings.voting_end.isoformat(),
-        },
+        # The *effective* clock, not the configured one: a bundle is a snapshot of
+        # this deployment as it actually ran, so a deadline an organiser moved has
+        # to travel with it. `source` says where the window came from, which is what
+        # makes an exported event auditable after the fact.
+        "event": eventconfig.active(db).as_dict(),
         "counts": {name: len(rows) for name, rows in tables.items()},
         "tables": tables,
         "checksum": checksum(tables),
@@ -697,7 +696,8 @@ def import_bundle(db: Session, bundle: dict, *, mode: str = "dry_run") -> dict:
                 subject_ref=row.get("subject_ref"),
                 subject_name=row.get("subject_name") or "Unknown",
                 subject_email=row.get("subject_email"),
-                event_name=(bundle.get("event") or {}).get("name") or settings.event_name,
+                event_name=(bundle.get("event") or {}).get("name")
+                or eventconfig.active(db).name,
                 role=row.get("role"),
                 payload=row.get("payload"),
                 signature=row.get("signature") or "",

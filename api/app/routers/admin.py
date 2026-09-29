@@ -12,7 +12,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from .. import archive, audit, webhooks, zscore
+from .. import archive, audit, eventconfig, webhooks, zscore
 from ..config import settings
 from ..db import get_db
 from ..deps import client_ip, require_role
@@ -117,11 +117,17 @@ def _expected_coverage(db: Session) -> dict[int, int]:
 def overview(db: Session = Depends(get_db), user: User = Depends(require_role(*ADMIN_ROLES))) -> dict:
     counts = score_counts(db)
     submissions = db.scalars(select(Submission)).all()
+    clock = eventconfig.active(db)
     return {
         "event": {
-            "name": settings.event_name,
-            "starts_at": settings.event_start.isoformat(),
-            "ends_at": settings.event_end.isoformat(),
+            "name": clock.name,
+            "starts_at": clock.starts_at.isoformat(),
+            "ends_at": clock.ends_at.isoformat(),
+            "voting_opens_at": clock.voting_opens_at.isoformat(),
+            "voting_closes_at": clock.voting_closes_at.isoformat(),
+            # The console's header says where the deadline came from, so nobody has
+            # to guess whether a date moved or was always like that.
+            "window_source": clock.source,
         },
         "totals": {
             "participants": len(db.scalars(select(User).where(User.role == "participant")).all()),
@@ -385,7 +391,7 @@ def make_archive(
         db,
         webhooks.EVENT_EVENT_ARCHIVED,
         {
-            "event": settings.event_name,
+            "event": bundle["event"]["name"],
             "bundle_version": bundle["bundle_version"],
             "results": len(bundle["results"]),
             "archived_by": user.email,

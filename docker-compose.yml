@@ -36,6 +36,16 @@ services:
       EVENT_NAME: ${EVENT_NAME:-Axion Demo Hackathon}
       EVENT_START: ${EVENT_START:-}
       EVENT_END: ${EVENT_END:-}
+      # The community window is its own clock — an event can stop accepting work
+      # and still be taking votes. Blank means "derived from the event": it opens
+      # with it and closes three days after it. Like the submission window these
+      # are the deployment's defaults, and an organiser can move either from the
+      # console without a restart (see `event_settings`).
+      VOTING_OPENS_AT: ${VOTING_OPENS_AT:-}
+      VOTING_CLOSES_AT: ${VOTING_CLOSES_AT:-}
+      # Rotation: a deployment can change the key that signs participation records
+      # without invalidating the sessions signed by SECRET_KEY. Defaults to it.
+      RECORD_SIGNING_KEY: ${RECORD_SIGNING_KEY:-}
       GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
       GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
@@ -57,6 +67,12 @@ services:
       # One-flag alias for `SEED_MODE=fixtures EVENT_SOURCE=fixtures`. Still
       # honoured; no longer required, because that is now the default.
       DOGFOOD_FIXTURE_MODE: ${DOGFOOD_FIXTURE_MODE:-false}
+      # The offline passwordless login, off unless a deployment asks for it. It is
+      # already implied by the demo flags above, so this is only needed to be
+      # explicit about a posture the gates would otherwise infer.
+      LOCAL_DEV_LOGIN: ${LOCAL_DEV_LOGIN:-false}
+      # Set false to silence the boot banner that prints the checker headers.
+      AXION_ANNOUNCE_ACCESS: ${AXION_ANNOUNCE_ACCESS:-true}
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
       # The fixture dataset sits at the repository root, which is not part of the
       # API build context; the volume below mounts the file and this names it.

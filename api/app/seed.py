@@ -26,7 +26,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 
 from .audit import record
-from .config import settings
+from . import eventconfig
 from .db import Base, SessionLocal, engine
 from .github import check_commit_integrity
 from .models import (
@@ -279,11 +279,15 @@ def seed(reset: bool = False) -> dict:
         db.flush()
 
         # Commit integrity: mocked deterministic history, with one clear flag.
+        # The window comes from the effective clock, so seeding a deployment whose
+        # organiser has already moved the deadline checks commits against *that*
+        # window rather than against the one the environment started with.
+        clock = eventconfig.active(db)
         for index, submission in enumerate(submissions):
             report = check_commit_integrity(
                 submission.repo_url,
-                event_start=settings.event_start,
-                event_end=settings.event_end,
+                event_start=clock.starts_at,
+                event_end=clock.ends_at,
                 mock=True,
             )
             submission.integrity_pct_in_window = report.get("pct_in_window")

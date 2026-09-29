@@ -67,6 +67,14 @@ is where the interesting decisions are.
 Shot 13 is the one to leave the room with: the last three panels are what an organiser needs *after* the
 event, and none of them requires a cloud account, a worker process or a second service.
 
+| # | Time | On screen | What you do | What it proves |
+| - | ---- | --------- | ----------- | -------------- |
+| 14 | +1:30–2:00 | `/admin` → *Event setup* → **Event window** | Move the submission deadline five minutes into the future and save. Show the panel warn that submissions close immediately, then `curl` a submission as the participant and show the `403` naming the new deadline. Hand it back with **Hand it back to the configuration**, and show the window return to the dataset's. | **T3** — the event's own dates are a control, not a constant: the write path, the ballot, the tally's publication rule and the certificate all resolve the same clock, and the change is attributed rather than made in an environment file nobody can date. |
+
+The move-to-past-then-hand-it-back pair is the whole point of shot 14. A deadline that can only be set by
+the person who can also edit `.env` is not a feature an organiser can use mid-event, and a deadline that
+cannot be handed back is a change nobody can undo.
+
 ## The two things worth saying out loud
 
 **The deadline is enforced by the API, not by the clock in the interface.** Shot 4 is where it is worth

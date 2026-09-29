@@ -13,7 +13,7 @@
 # seed at boot (`docker compose logs api`) and written here literally.
 #
 # Axion's own deeper self-check is a separate artefact and a separate manifest
-# (`api/scripts/selfcheck.toml`), because it asks nineteen questions rather than
+# (`api/scripts/selfcheck.toml`), because it asks forty questions rather than
 # seven and must never be mistaken for this report.
 
 [portal]
@@ -31,11 +31,15 @@ base_url = "http://localhost:3000"
 # outbox, signed participation records, a whole-event bundle and an embeddable
 # gallery) and they are claimed where the evidence exists:
 #
-#   api/scripts/selfcheck.toml  37 checks, T1-T4 all verified, read by
+#   api/scripts/selfcheck.toml  40 checks, T1-T4 all verified, read by
 #                               api/scripts/dogfood_check.py -> acceptance-report.selfcheck.txt
 #   api/scripts/acceptance.py   36 checks, tier by tier -> acceptance-report.axion.txt
 #   api/tests/test_community.py, test_webhooks.py, test_records.py,
 #   test_bundle_embed.py        36 tests over the same surfaces
+#   api/tests/test_event_settings.py  32 tests over the organiser's clock, which is
+#                               also where this file's `submissions_close` stops
+#                               being the last word: an organiser can override it
+#                               at run time, and the configuration stays underneath
 #   README.md                   the tier table, with the surface behind each line
 claimed = ["T1", "T2"]
 pitch = "A self-hostable hackathon submission and judging portal: fixture-seeded, deadline-enforced in the API, with backend role isolation, weighted rubrics and a documented Z-score normalization — plus email-gated community voting, a signed webhook outbox and verifiable participation records."

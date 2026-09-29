@@ -11,7 +11,7 @@ none overwriting another:
     acceptance-report.txt             the organisers' run.py reading the root
                                       `.dogfood.toml` — the receipt the brief asks for
     acceptance-report.selfcheck.txt   api/scripts/dogfood_check.py reading
-                                      api/scripts/selfcheck.toml — nineteen checks
+                                      api/scripts/selfcheck.toml — forty checks
     acceptance-report.axion.txt       this file — the tier ladder, T0 to T4,
                                       plus the bonus claims
 

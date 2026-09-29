@@ -33,6 +33,7 @@ from datetime import datetime, timezone
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from . import eventconfig
 from .config import VOTING_TAIL, settings
 from .models import Comment, Submission, Vote, Voter
 
@@ -43,33 +44,19 @@ def now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def voting_window() -> dict:
-    """The community window, resolved server-side. Client clocks are never trusted."""
-    now = now_utc()
-    opens_at = settings.voting_start
-    closes_at = settings.voting_end
-    if now < opens_at:
-        phase = "upcoming"
-    elif now > closes_at:
-        phase = "closed"
-    else:
-        phase = "open"
-    return {
-        "now": now.isoformat(),
-        "opens_at": opens_at.isoformat(),
-        "closes_at": closes_at.isoformat(),
-        "phase": phase,
-        "open": phase == "open",
-        "closed": phase == "closed",
-        # Results are published only after the window closes. Before it opens
-        # there is nothing to publish, and while it is open publishing would
-        # measure the crowd rather than the projects.
-        "results_visible": phase == "closed",
-    }
+def voting_window(db: Session | None = None) -> dict:
+    """The community window, resolved server-side. Client clocks are never trusted.
+
+    Delegated to `eventconfig`, which is the one place that decides whether the
+    deployment's configuration or the organiser's row is authoritative. The
+    semantics are unchanged from T3: the community clock is its own clock, and
+    results are published only once it has closed.
+    """
+    return eventconfig.voting_window(db)
 
 
-def results_visible() -> bool:
-    return voting_window()["results_visible"]
+def results_visible(db: Session | None = None) -> bool:
+    return eventconfig.voting_results_visible(db)
 
 
 def normalize_email(value: str) -> str:
@@ -226,7 +213,7 @@ def aggregate(db: Session, *, include_struck: bool = False) -> dict:
     if include_struck:
         totals["votes_struck"] = sum(struck_counts.values())
     return {
-        "window": voting_window(),
+        "window": voting_window(db),
         "results": results,
         "totals": totals,
     }

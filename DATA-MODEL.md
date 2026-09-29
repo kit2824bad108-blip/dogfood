@@ -1,11 +1,12 @@
 # Axion data model
 
-Postgres 16 in production (SQLite in the test suite), one schema, eighteen tables, one Alembic migration
+Postgres 16 in production (SQLite in the test suite), one schema, twenty-two tables, one Alembic migration
 chain. Everything the engine decides — who judged what, what they said, who voted, what the deployment
-told a subscriber, and what changed afterwards — is a row somewhere in this document.
+told a subscriber, when the event closes, and what changed afterwards — is a row somewhere in this
+document.
 
 - Source of truth: `api/app/models.py` (SQLAlchemy 2 typed mappings)
-- Migrations: `api/alembic/versions/0001_initial.py` … `0008_webhooks_and_records.py`
+- Migrations: `api/alembic/versions/0001_initial.py` … `0010_event_settings.py`
 - Connection: `api/app/db.py`
 
 ## Design rules
@@ -208,6 +209,28 @@ erDiagram
         datetime created_at
         datetime delivered_at
     }
+    INVITE_TOKENS {
+        int id PK
+        string token_digest UK "sha256 of the raw link token"
+        string email
+        string invited_by "denormalised, like the audit actor"
+        datetime expires_at
+        datetime used_at "single use"
+    }
+    EVENT_SETTINGS {
+        int id PK "always 1: CHECK (id = 1)"
+        string name
+        datetime starts_at
+        datetime ends_at "the submission deadline"
+        datetime voting_opens_at "the community window has its own clock"
+        datetime voting_closes_at
+        text note "why the clock moved"
+        int revision "optimistic concurrency"
+        int updated_by_id
+        string updated_by_email
+        datetime created_at
+        datetime updated_at
+    }
     PARTICIPATION_RECORDS {
         int id PK
         string code UK "public handle, inside the signed payload"
@@ -243,7 +266,17 @@ submissions ──< comments >──┬─ users      (T3: an author, or a voter
 webhook_endpoints ──< webhook_deliveries  (T4: an outbox row per event per endpoint)
 participation_records                     (T4: signed, self-contained; no foreign keys at all)
 throttle_events                           (T3: rate limiting that holds across workers)
+invite_tokens                             (T2: single-use judge invite links, stored as digests)
+event_settings                            (T3: zero rows = the configured window; one row = the organiser's)
 ```
+
+`event_settings` is the one table here that describes the deployment rather than the event's contents, and
+it references nothing on purpose. It holds **zero or one row**: zero means the event identity and window
+come from configuration (`EVENT_*`, or the imported dataset under `EVENT_SOURCE=fixtures`), one means an
+organiser has taken the clock over. That is why it is safe to add to a running deployment — a database that
+has never seen this table behaves exactly as it did before the migration, which is also what keeps a fresh
+`docker compose up` starting *closed* for the acceptance check. The `CHECK (id = 1)` is the singleton: two
+rows would be two deadlines, and "which one is real" is not a question a portal should be able to ask.
 
 The T4 record table deliberately references nothing. A record is a claim about a *moment* — `subject_ref` is
 the identifier the subject had in the system it came from, not a live pointer — so a foreign key to `users`
@@ -418,6 +451,28 @@ a thread. `author_name` and `author_email` are denormalised for the same reason 
 its actor: the comment must survive the account it came from. `status` is `visible`/`hidden` and nothing is
 ever deleted by moderation.
 
+### `event_settings` (the organiser's clock)
+
+**Zero rows or one row, and the database says so.** `CHECK (id = 1)` is the singleton: two deadlines is the
+one state this schema must make unrepresentable, because every reader — the write path that refuses a late
+submission, the ballot, the certificate signer, the bundle export — resolves the window through a single
+resolver (`api/app/eventconfig.py`), and a resolver with two answers is worse than no control at all.
+
+A row is the organiser's **complete** statement of the window, with every timestamp `NOT NULL` and
+materialised from whatever was effective when they first took the clock over. That is what makes a partial
+edit partial: `PATCH {"ends_at": …}` moves the deadline and leaves the ballot window exactly where it was,
+because the stored row already carries the ballot window rather than leaving it to be re-derived. Zero rows
+is the normal state for a deployment that has never had its clock moved.
+
+`revision` is optimistic concurrency — the console sends the revision it rendered, and a mismatch is a 409
+rather than a silent overwrite of a colleague's edit. `note`, `updated_by_id` and `updated_by_email` are the
+attribution: "the deadline moved" and "the deadline moved because the venue flooded" are different facts to
+the participant reading the change afterwards, and the same change is written to `audit_logs` and announced
+on the webhook catalogue.
+
+The row **never overwrites the deployment's configuration**. `DELETE /api/admin/event` is the reset, and it
+cannot fail to find the original because the original was never written over.
+
 ### `throttle_events` (T3)
 
 One row per attempt: `bucket` (`vote.cast`, `comment.create`, …), `key` (a voter, an address, an IP) and
@@ -437,6 +492,15 @@ A delivery is an **outbox row, not a log line**. `payload` holds the exact envel
 lets a receiver dedupe on the delivery id and verify the signature without re-deriving the body. `status`
 walks `pending` → `delivered`, or `pending` → `dead` after the retry budget is spent; `dead` is a state, so
 what was lost is visible and replayable rather than gone. `next_attempt_at` carries the backoff.
+
+### `invite_tokens` (T2)
+
+One-time judge onboarding. The organiser generates the token, the invitee follows the link and picks a name
+and password, and only the **SHA-256 digest** of the raw token is stored — so a database snapshot cannot be
+replayed into a judge account, exactly as with a password-reset link. `invited_by` is an email rather than a
+foreign key, for the same reason the audit trail denormalises its actor: the invite must remain explainable
+after the organiser account it came from is gone. `expires_at` plus `used_at` make it single-use and
+short-lived, and both are checked on the way in rather than trusted from the link.
 
 ### `participation_records` (T4)
 
@@ -480,11 +544,14 @@ instead of creating a second event.
 | `comments` | `ck_comments_status` | `visible`/`hidden`: moderation hides, it never deletes |
 | `webhook_deliveries` | `ck_webhook_deliveries_status` | `pending`/`delivered`/`failed`/`dead` — a dead delivery is a state, not a disappearance |
 | `participation_records` | `uq_participation_records_code`, `ck_participation_records_kind` | one public code per record; `subject_kind` ∈ {judge, participant, team} |
+| `event_settings` | `ck_event_settings_singleton` (`id = 1`) | one clock, enforced by the database rather than by the code that writes it |
 
 ## Migration chain
 
 | Revision | Adds |
 | -------- | ---- |
+| `0010_event_settings` | `event_settings` — the organiser's clock, a singleton with a revision and an attributed note |
+| `0009_judge_invites` | `invite_tokens` — one-time judge onboarding links, stored as digests |
 | `0008_webhooks_and_records` | `webhook_endpoints`, `webhook_deliveries`, `participation_records` — the outbox, its receiver registry and the signed records |
 | `0007_community_surface` | `voters`, `votes`, `comments`, `throttle_events` — the community surface and the rate limiter's storage |
 | `0006_imported_reality_is_partial` | `teams.source_ref`, `submissions.duplicate_of_submission_id`; replaces `uq_teams_name` and `uq_submissions_team` with the partial indexes above |
@@ -496,8 +563,10 @@ instead of creating a second event.
 
 `0002` onwards are additive and nullable-or-defaulted, so they apply to a database that is already running
 an event: existing submissions become `submitted`, keep a null track, and are unaffected by the rubric.
-`0007` and `0008` create new tables only, so an event that is mid-flight gains the community surface and the
-outbox without any existing row changing shape.
+`0007`, `0008`, `0009` and `0010` create new tables only, so an event that is mid-flight gains the community
+surface, the outbox, judge invites and the organiser's clock without any existing row changing shape. `0010`
+is the clearest case: a database that has never been given a row behaves exactly as it did before the
+migration, because an empty `event_settings` means "the window is the configured one".
 
 The test suite builds the schema with `Base.metadata.create_all` for speed, and the migrations are kept in
 step with it — **by test, not by hand**: `api/tests/pg/test_migrations.py` migrates an empty PostgreSQL

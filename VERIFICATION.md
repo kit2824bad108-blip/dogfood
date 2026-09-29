@@ -12,10 +12,11 @@ one row stays in "not executed".
 ## Executed
 
 Phases are cumulative and read in order: A1–A2 are the original build, A3 added PostgreSQL, Docker and CI,
-A4 reconciled the repository with the organisers' published files, and **A5 built the T3 and T4 surfaces**.
-A number that changes between phases (the fast suite's count, the route count, the check count) is restated
-in each phase that changed it rather than edited in place, so the record shows what was true when it was
-observed.
+A4 reconciled the repository with the organisers' published files, **A5 built the T3 and T4 surfaces**, A6
+rebuilt the whole stack from a clean volume and proved the offline network, and **A7 made the event's own
+clock an organiser control**. A number that changes between phases (the fast suite's count, the route count,
+the check count) is restated in each phase that changed it rather than edited in place, so the record shows
+what was true when it was observed.
 
 | # | Command | Observed result |
 | - | ------- | --------------- |
@@ -372,3 +373,77 @@ The exit code of every `docker compose` command on this machine is reported as 1
 Docker writes progress messages to stderr and PowerShell treats any stderr output as an error. The actual
 containers started, reached healthy, and produced the results above; the real signal is the container
 status, not the shell exit code.
+
+## Phase A7 — the organiser's clock (2026-09-29)
+
+The event's dates used to be readable only from the environment, read once at import: extending a deadline
+meant editing a variable and restarting, and nothing in the database recorded that it had moved. This phase
+makes the clock a **control** — a single row the console can write, with the configuration left underneath
+it — and then re-runs every artefact, because a new way to change the event's own rules is exactly the kind
+of change that has to be re-observed rather than reasoned about.
+
+| # | Command | Observed result |
+| - | ------- | --------------- |
+| 40 | `cd api && python -m pytest -q -m "not postgres"` | **295 passed**, 1 warning, 24 m 18 s. 241 passed before this phase, plus 32 new tests in `tests/test_event_settings.py` and 22 added by the working tree since Phase A5. (`pytest tests` with the marker unset reports the same 295 plus **123 deselected**, which is how the PostgreSQL suite stays out of an in-process run.) |
+| 41 | `AXION_TEST_DATABASE_URL=… AXION_REQUIRE_POSTGRES=1 python -m pytest -q tests/pg` | **123 passed**, 1 warning. The chain test now pins `0010_event_settings` as the head, and `tests/pg/test_event_settings_postgres.py` proves the singleton at the database: a second `INSERT` is refused by `ck_event_settings_singleton`, and a row with no deadline cannot be stored at all |
+| 42 | `cd web && npm run typecheck && npm run build` | Clean: **11 routes**, 103 kB shared first-load JS. `/admin` grew to 16.7 kB — the Event window panel, its warnings, and the change log |
+| 43 | `docker compose down -v && SEED_MODE=fixtures EVENT_SOURCE=fixtures docker compose up -d --build` | Migrations `0001`→**`0010`** on a fresh volume (visible in `docker compose logs api`), fixture dataset seeded, readiness `{"ready":true,…,"dataset":"122 users, 41 submissions"}` |
+| 44 | `python3 run.py .dogfood.toml > acceptance-report.txt` | **7 PASS**, footer `claimed T1 T2, verified T1 T2` — including *closed event refuses submissions*, which is the check that would have broken first if an empty `event_settings` table had stopped meaning "the configured window" |
+| 45 | `python3 api/scripts/dogfood_check.py api/scripts/selfcheck.toml --out acceptance-report.selfcheck.txt` | **40 passed, 0 failed, 0 skipped** (was 37). Ladder: T1 4/4, T2 9/9, **T3 8/8**, T4 11/11, `Solid: T1, T2, T3, T4`. The three new T3 checks observe the clock agreeing with the public payload, a participant being refused it, and the two windows being published side by side |
+| 46 | `docker compose down -v && SEED_MODE=demo EVENT_SOURCE=env SEED_DEMO=true EVENT_START=2026-09-25T00:00:00Z EVENT_END=2026-10-03T18:00:00Z docker compose up -d`, then `python3 api/scripts/acceptance.py --out acceptance-report.axion.txt` | **34 passed, 0 failed, 2 skipped** (36 checks), unchanged from Phase A5, and the API-first bonus now reports **80 documented paths** (was 76) — the four clock endpoints are in the generated schema |
+| 47 | `docker compose down -v && docker compose up -d` (the shipped default) | `{"ready":true,…,"dataset":"122 users, 41 submissions"}`; `/api/health` reports `"event":"Sample Hack 2026"`, window `2026-02-26 → 2026-03-01T18:00Z`, `closed: true`, `source: "deployment"` |
+| 48 | The console, in a browser, against that instance: `/admin` → *Event setup* → **Event window** | Moved the deadline and saved. The panel returned *"Saved: ends_at, note. Recorded in the audit trail."* with the consequences stated as warnings — *"This re-opens the submission window — work may be submitted again."* and *"Submissions will remain open for another 2 days and 23 hours."* — and the badge changed from *from the deployment's configuration* to *set by an organiser · revision 1*. `/api/health` and `/api/event` both immediately reported `source: "organiser"`, `window_revised: true` and the new close (`2026-10-02T06:30:00Z`, which is 12:00 in this browser's own zone — the local-time input is converted through `toISOString()`, so what the organiser types is what the API receives). The header banner above the panel also changed from *Submissions closed* to *Submissions open* **without a page reload**: the header is outside the panel, fetches the window once on mount, and listens for the same announcement, because a console that leaves a stale deadline three inches above the form it just re-opened is contradicting itself |
+| 49 | The same panel: **Hand it back to the configuration** | Notice *"The event window is back under the deployment's configuration."*; header and badge both returned to *Submissions closed* without a reload; `/api/health` returned to `closed: true`, `closes_at: 2026-03-01T18:00:00Z`, `source: "deployment"`; the change log showed *Moved ends_at* and *Handed back ends_at* with the actor and the timestamp; `/api/admin/audit` held `event.settings_updated` then `event.settings_reset`. (The first hand-back recorded `changed: []`, so the log read *"Handed back nothing"* — a reset that moved the deadline is a change to the deadline, and the entry now names it; see the third design correction below) |
+| 50 | `python3 run.py .dogfood.toml` again, **after** the console had moved the clock and handed it back | **7 PASS** again, `claimed T1 T2, verified T1 T2` — the override is reversible from the console, and the deployment the checker meets afterwards is the one its dataset describes |
+| 51 | `docker compose down -v && docker compose up -d --build`, then the whole ladder again on that fresh volume, then `/admin` → *Event setup* in the browser | `event_settings` is **empty** on the fresh volume and `/api/event` reports `source: "deployment"`, `revision: 0`, `phase: "closed"`, `closes_at: 2026-03-01T18:00:00Z` — an untouched deployment still enforces the dataset's deadline, which is the whole reason the row exists instead of a column. `run.py` **7 PASS**; selfcheck **40 passed, 0 failed, 0 skipped** (T1 4/4, T2 9/9, T3 8/8, T4 11/11); `pytest -m "not postgres"` **295 passed**, 123 deselected, 27 m 01 s; `pytest tests/pg` **123 passed** (both on the same sitting, so the two numbers are observed together rather than four hours apart); `npm run typecheck && npm run build` clean, 11 routes. Then, in the console: **Save the window** with the close moved to 31-12-2026 23:30 local — the response said *"Saved: ends_at. Recorded in the audit trail."*, the badge flipped to *set by an organiser · revision 1*, the banner above the panel flipped to *Closes in 93d 05h 42m* **without a reload**, *Record signing key* flipped from *published* to *held until the event closes*, and the warnings named both consequences (*"This re-opens the submission window — work may be submitted again."*, *"Submissions will remain open for another 93 days and 5 hours."*). `/api/event` agreed: `source: "organiser"`, `window_revised: true`, `phase: "open"`, submission close `2026-12-31T18:00:00Z` — exactly 23:30 in the browser's own zone (+05:00), so the local-time input is converted, not reinterpreted — while the voting window stayed closed at `2026-03-04T18:00:00Z`. **Hand it back to the configuration** returned the notice, the banner, the dates and `/api/event` to the deployment's window, left 0 rows in `event_settings`, and left the change log reading *Moved ends_at* then *Handed back ends_at*, each with the actor and the time |
+
+Two findings, both in the test harness rather than the product — and both of the kind that a green suite
+would otherwise have hidden:
+
+20. **A test that patched a module-level copy of the settings stopped testing anything.**
+    `test_records.py::test_the_verification_key_is_published_only_after_the_event_closes` moved the event
+    window by replacing `records.settings`. With the publication rule reading the *effective* clock through
+    `app/eventconfig.py`, that patch became a no-op and the test **failed** — the correct outcome, and the
+    reason the failure was worth fixing properly rather than by widening the assertion: patching a copy kept
+    the test green while the API had stopped honouring the clock, which is precisely the failure it exists to
+    catch. The two fixtures in `api/tests/conftest.py` that moved the window the same way were updated in the
+    same pass, so `closed_window` and `voting_closed` now move `app.config.settings` — the value the resolver
+    actually reads — and clear the resolver's cache. This is the third phase in a row where re-observing the
+    deployment found something review had not.
+21. **Two test modules with the same basename collided at collection.** `tests/test_event_settings.py` and
+    `tests/pg/test_event_settings.py` are both imported as `test_event_settings` under pytest's default
+    rootdir import mode, and the first run that collected both in one session stopped with *"import file
+    mismatch"* instead of running. The PostgreSQL module is now `tests/pg/test_event_settings_postgres.py`.
+    Worth recording because the earlier `pytest tests` run had collected the two files in an order that
+    happened to work, so the collision appeared only when the command changed.
+
+Two smaller gaps were closed in the same pass, both found by asking whether a documented setting actually reached the container. `docker-compose.yml` passed neither `VOTING_OPENS_AT`/`VOTING_CLOSES_AT` nor `RECORD_SIGNING_KEY` nor `LOCAL_DEV_LOGIN` nor `AXION_ANNOUNCE_ACCESS` to the API service, so a deployment that set one of them in `.env` (as both `.env.example` and DATA-MODEL.md invite it to) would have been ignored in silence — the community window and the record-signing key were configurable only by rebuilding the image. They are passed through now, and `.env.example` says what the four `EVENT_*`/`VOTING_*` values are: the deployment's **defaults**, overridable at run time from the console without a restart and never overwritten by it.
+
+Three decisions were made during the phase rather than after it. The read path **resolves through the
+caller's session** instead of caching the row: an organiser's change has to be visible to the very next
+request, and a settings cache with a staleness window is a deadline that is wrong for a few seconds at the
+one moment anybody is looking at it. The module-level cache that remains exists only for callers with no
+session of their own (startup, an offline script) and is primed at boot and after every write. A **naive
+timestamp in a PATCH is read as UTC**, because the alternative is a deadline that depends on the server's
+timezone table. And the **reset's audit entry names the fields it moved**, so the change log distinguishes
+"handed back" from "nothing happened" instead of reporting the empty set.
+
+A fourth change came from watching the interface rather than the API: the header fetches the window once, on
+mount, so moving the clock in the console left the *banner above the panel* still saying **Submissions
+closed** until a reload — two different deadlines on one screen. The panel now announces the change
+(`axion:window-moved`) and the header listens for it, which was verified by watching the banner flip without
+a reload in both directions (step 48 and step 49 above). Nothing about that is visible in an API report, and
+it is the kind of thing this project's own documentation would have claimed was fine.
+
+### What this phase does not claim
+
+The clock is per-deployment, not per-event: one row describes the one event this database is running, and
+running two events on one instance remains unsupported (that was already true, and the singleton constraint
+says so in the schema). A page already open in somebody's browser keeps the deadline it was rendered with
+until it reloads — the API is immediate for the next request, and the header refetches when the change is
+made *in that browser*, but an open tab elsewhere is not pushed to. Moving the window does **not** re-run
+Commit Integrity checks that have already been filed; the response says so before the change is applied, and
+the console's *Commit review* tab re-checks a project on demand. And the console warns rather than refuses:
+an organiser can still close the event immediately, extend it indefinitely, or publish the community tally
+and the record key early — the point is that the consequences are named, attributed and reversible, not that
+the buttons are hard to press.

@@ -1,8 +1,14 @@
 """Runtime configuration, read once from the environment.
 
-Axion is a *single-event* deployment: the event identity and window live here,
-not in the database. That keeps the schema small and makes the archive bundle a
-faithful snapshot of one deployment.
+Axion is a *single-event* deployment, and the values here are that event's
+**defaults**: `event_start` / `event_end` / `voting_start` / `voting_end` are what
+this deployment enforces until an organiser takes the clock over from the console.
+
+The *effective* clock is `app/eventconfig.py`, which overlays the organiser's row
+from `event_settings` on top of these values, and nothing in the application reads
+the window from this module directly — the properties at the bottom of this file
+describe the configured window, not the enforced one, and exist so that the
+environment's own semantics stay testable in isolation.
 """
 from __future__ import annotations
 

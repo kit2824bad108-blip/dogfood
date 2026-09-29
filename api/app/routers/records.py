@@ -61,7 +61,7 @@ def list_records(
             "total": len(rows),
             "revoked": sum(1 for row in rows if row.revoked_at is not None),
         },
-        "key": records.key_publication(),
+        "key": records.key_publication(db),
     }
 
 
@@ -145,7 +145,7 @@ def verify_record(code: str, db: Session = Depends(get_db)) -> dict:
             status_code=404,
             detail="No record with that code was issued by this deployment.",
         )
-    return records.verification_report(record)
+    return records.verification_report(record, db=db)
 
 
 @router.get("/api/records/{code}/certificate", response_class=Response)
@@ -181,6 +181,6 @@ def records_overview(db: Session = Depends(get_db)) -> dict:
     return {
         "issued": {"total": len(rows), "by_kind": by_kind, "revoked": revoked},
         "lookup": "GET /api/records/{code} to verify one, /certificate for the printable copy",
-        "key": records.key_publication(),
+        "key": records.key_publication(db),
         "verified_against": "the deployment's own verdicts and ranking, duplicates excluded",
     }

@@ -70,7 +70,7 @@ async def require_open_window(
     trail still records what the participant was trying to do. A refusal that
     cannot say what it refused is a smaller trail than this feature deserves.
     """
-    if not submission_window_closed():
+    if not submission_window_closed(db):
         return
 
     attempted_status: str | None = None
@@ -89,7 +89,7 @@ async def require_open_window(
         ip=client_ip(request),
         details={
             "attempted_status": attempted_status,
-            "deadline": event_window()["closes_at"],
+            "deadline": event_window(db)["closes_at"],
             "refused_before_body_validation": True,
         },
     )
@@ -262,7 +262,7 @@ def my_submission(db: Session = Depends(get_db), user: User = Depends(current_us
             }
             for row in duplicates
         ],
-        "window": event_window(),
+        "window": event_window(db),
     }
 
 

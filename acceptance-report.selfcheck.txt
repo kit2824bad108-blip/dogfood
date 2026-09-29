@@ -12,14 +12,14 @@ the root `.dogfood.toml` (seven checks, the same program for every team). What
 follows is Axion's own deeper check, against the same running instance, and every
 line is an observation of that instance rather than a claim about it.
 
-Generated     : 2026-09-28T12:05:12.449329+00:00
-Target        : http://localhost:3000
+Generated     : 2026-09-29T12:02:13.381682+00:00
+Target        : http://127.0.0.1:8000
 Manifest      : api\scripts\selfcheck.toml (axion-self-check v1)
 Dataset       : fixtures.json — declared 41 submissions, 30 judges
 Auth          : headers mode, credentials from /api/dev/checker-headers
-Git commit    : 15e2406
+Git commit    : 1e6da86
 Python        : 3.12.10 on Windows
-Checks        : 37 total — 37 passed, 0 failed, 0 skipped
+Checks        : 40 total — 40 passed, 0 failed, 0 skipped
 
 The only write this check ever attempts is the closed-event submission probe,
 and it is skipped rather than attempted when the event is open, so a read-only
@@ -29,109 +29,115 @@ run cannot mutate the instance it is measuring.
 T0 — the runtime answers
 ------------------------------------------------------------------------------
 
-[PASS] Health endpoint answers  (43 ms)
+[PASS] Health endpoint answers  (8 ms)
        status ok; event 'Sample Hack 2026'; window closed (2026-02-26T18:00:00+00:00 → 2026-03-01T18:00:00+00:00); dev login True; commit integrity from mock
-[PASS] OpenAPI schema is served  (32 ms)
-       76 documented paths, OpenAPI 3.1.0, title 'Axion API'
-[PASS] Interactive API docs are served  (21 ms)
+[PASS] OpenAPI schema is served  (62 ms)
+       80 documented paths, OpenAPI 3.1.0, title 'Axion API'
+[PASS] Interactive API docs are served  (6 ms)
        Swagger UI served at /api/docs (937 bytes of HTML)
 
 ------------------------------------------------------------------------------
 T1 — public surface and the deadline
 ------------------------------------------------------------------------------
 
-[PASS] Public event configuration  (36 ms)
+[PASS] Public event configuration  (23 ms)
        phase closed; window 2026-02-26T18:00:00+00:00 → 2026-03-01T18:00:00+00:00; 8 tracks; rubric Functionality 33.33%, Quality 33.33%, Innovation 33.33%; stats {'teams': 40, 'submissions': 41, 'drafts': 0, 'judges': 30, 'verdicts': 126, 'assignments': 199}
-[PASS] Public gallery lists projects  (19 ms)
+[PASS] Public gallery lists projects  (13 ms)
        40 projects, 8 tracks; ['demo_url', 'video_url'] withheld from anonymous callers
 [PASS] Gallery search returns matches  (14 ms)
        q='dry' matched 4 projects (≥3 declared): Dry Compass, Dry Harbour, Dry Bridge
-[PASS] Closed event rejects submissions  (100 ms)
+[PASS] Closed event rejects submissions  (36 ms)
        403 on a live write attempt while the window is closed: 'The submission window is closed — no further edits are accepted'
 
 ------------------------------------------------------------------------------
 T2 — judging, exports and the blind gate
 ------------------------------------------------------------------------------
 
-[PASS] Judge sees their assignments  (41 ms)
+[PASS] Judge sees their assignments  (15 ms)
        6 assignments; technical 1/6 filed (16.7%); rubric 'Imported rubric — functionality, quality, innovation' with 3 weighted criteria
-[PASS] Technical view withholds presentation links  (71 ms)
+[PASS] Technical view withholds presentation links  (29 ms)
        'Small Meadow': repo and docs visible, demo/video links absent from the payload, presentation_unlocked=False
-[PASS] A judge cannot read a peer's scores  (28 ms)
+[PASS] A judge cannot read a peer's scores  (8 ms)
        403 from /api/judging/judges/jdg_01/scores
-[PASS] A judge can read their own scores  (55 ms)
+[PASS] A judge can read their own scores  (13 ms)
        200 from /api/judging/scores
-[PASS] Presentation stays locked until the technical verdict exists  (63 ms)
+[PASS] Presentation stays locked until the technical verdict exists  (22 ms)
        403 before this judge filed a technical verdict: 'Submit the technical evaluation before the presentation is unlocked' — enforced by the API, not by the browser
-[PASS] Z-score leaderboard ranks every project  (41 ms)
+[PASS] Z-score leaderboard ranks every project  (29 ms)
        40 ranked projects; leader 'Still Beacon' at 62.47 (raw average 4.5, movement 0); 122 technical verdicts; 0 coverage warnings
-[PASS] Leaderboard CSV export  (36 ms)
+[PASS] Leaderboard CSV export  (25 ms)
        40 data rows, 15 columns: rank, submission_id, project, team, track, repo_url…
-[PASS] Scores CSV export  (60 ms)
+[PASS] Scores CSV export  (30 ms)
        126 data rows, 17 columns: submission_id, project, team, track, judge_id, judge_name…
-[PASS] Judging progress CSV export  (172 ms)
+[PASS] Judging progress CSV export  (95 ms)
        30 data rows, 9 columns: judge_id, judge, email, assigned, technical_done, technical_pending…
 
 ------------------------------------------------------------------------------
 T3 — community voting, comments and the hidden tally
 ------------------------------------------------------------------------------
 
-[PASS] The community window is published, and its phase is reported  (40 ms)
+[PASS] The community window is published, and its phase is reported  (21 ms)
        community voting is closed; 2026-02-26T18:00:00+00:00 → 2026-03-04T18:00:00+00:00; results published
-[PASS] A ballot is not readable without a token  (41 ms)
+[PASS] A ballot is not readable without a token  (4 ms)
        401 with no ballot token: a ballot is not readable by anyone who has not asked for one
-[PASS] The tally is published once the window closes, and refused with a reason before  (46 ms)
+[PASS] The tally is published once the window closes, and refused with a reason before  (39 ms)
        window closed, tally published: 0 projects, The window has closed.
-[PASS] An unverified address is refused before a ballot exists  (26 ms)
+[PASS] An unverified address is refused before a ballot exists  (5 ms)
        422 for an address that is not one: the door is a verified email, and an unverified one never reaches a ballot
-[PASS] Project comment threads are public  (101 ms)
+[PASS] Project comment threads are public  (27 ms)
        comment thread readable without credentials: 0 visible, author addresses withheld from a non-organiser
+[PASS] The console's event clock is the clock the public event payload publishes  (16 ms)
+       clock agreed with /api/event: 'Sample Hack 2026' 2026-02-26T18:00:00+00:00 → 2026-03-01T18:00:00+00:00 (source deployment, revision 0); submissions closed, record key published
+[PASS] A participant cannot read or move the event clock  (8 ms)
+       403 for a participant on the organiser's clock: the deadline is moved by the organiser, not by whoever is running late
+[PASS] The submission window and the community window are published separately  (22 ms)
+       submissions 2026-02-26T18:00:00+00:00 → 2026-03-01T18:00:00+00:00 (closed); ballot closed 2026-02-26T18:00:00+00:00 → 2026-03-04T18:00:00+00:00; results published
 
 ------------------------------------------------------------------------------
 T4 — webhooks, signed records, the bundle and the embed
 ------------------------------------------------------------------------------
 
-[PASS] The webhook outbox is managed from the console  (62 ms)
-       0 receivers, 10 events in the catalogue, queue {'pending': 0, 'delivered': 0, 'failed': 0, 'dead': 0}; signed with X-Axion-Signature (sha256=<hex> over '<timestamp>.<body>' with the endpoint secret); 5 attempts, worker: none — POST /api/admin/webhooks/dispatch flushes the queue
-[PASS] A participant cannot manage webhook receivers  (34 ms)
+[PASS] The webhook outbox is managed from the console  (21 ms)
+       0 receivers, 11 events in the catalogue, queue {'pending': 0, 'delivered': 0, 'failed': 0, 'dead': 0}; signed with X-Axion-Signature (sha256=<hex> over '<timestamp>.<body>' with the endpoint secret); 5 attempts, worker: none — POST /api/admin/webhooks/dispatch flushes the queue
+[PASS] A participant cannot manage webhook receivers  (9 ms)
        403 from /api/admin/webhooks
-[PASS] Anonymous callers cannot read the webhook queue  (33 ms)
+[PASS] Anonymous callers cannot read the webhook queue  (3 ms)
        401 from /api/admin/webhooks
-[PASS] The whole event exports as one signed, credential-free bundle  (820 ms)
-       v1 bundle, sha256 4d020ad0b44b312c…, 40 teams / 41 submissions / 126 verdicts, no credential in the document
-[PASS] A participant cannot export the event  (39 ms)
+[PASS] The whole event exports as one signed, credential-free bundle  (928 ms)
+       v1 bundle, sha256 58e9fae18f76ff68…, 40 teams / 41 submissions / 126 verdicts, no credential in the document
+[PASS] A participant cannot export the event  (7 ms)
        403 from /api/admin/bundle/export
-[PASS] An unusable bundle is refused whole, by name  (26 ms)
+[PASS] An unusable bundle is refused whole, by name  (10 ms)
        refused whole with 2 named problem(s): bundle_version 0 is not 1
-[PASS] The deployment states what it can prove, and with which key  (11 ms)
+[PASS] The deployment states what it can prove, and with which key  (7 ms)
        0 records issued (0 revoked); key hmac-sha256 df506c8d8cd83d1a published: The event window is closed, so the key is published and anyone can verify a record without asking this deployment.
-[PASS] A code this deployment never issued does not verify  (17 ms)
+[PASS] A code this deployment never issued does not verify  (8 ms)
        404 for a code this deployment never issued: verification answers about this deployment, it does not guess
-[PASS] A participant cannot issue records  (39 ms)
+[PASS] A participant cannot issue records  (7 ms)
        403 from /api/admin/records/issue
-[PASS] The gallery embeds as a self-contained document  (67 ms)
+[PASS] The gallery embeds as a self-contained document  (12 ms)
        self-contained, iframe-ready gallery: 24 project cards, no third-party asset
-[PASS] The paste-ready embed snippet is generated, not hard-coded  (16 ms)
+[PASS] The paste-ready embed snippet is generated, not hard-coded  (6 ms)
        paste-ready: http://localhost:3000/api/embed/gallery?limit=24&theme=light
 
 ------------------------------------------------------------------------------
 AUTH — authenticated boundaries
 ------------------------------------------------------------------------------
 
-[PASS] Organizer header authenticates as an admin  (36 ms)
+[PASS] Organizer header authenticates as an admin  (10 ms)
        a header alone authenticates as organiser@sample-hack-2026.dogfood (admin), with no login round-trip
-[PASS] Participant reaches their own submission surface  (23 ms)
+[PASS] Participant reaches their own submission surface  (17 ms)
        200 from /api/submissions/me
-[PASS] Participant cannot read the organizer leaderboard  (34 ms)
+[PASS] Participant cannot read the organizer leaderboard  (7 ms)
        403 for a participant on an organizer-only route
-[PASS] Anonymous request cannot read the organizer leaderboard  (47 ms)
+[PASS] Anonymous request cannot read the organizer leaderboard  (4 ms)
        401 with no credentials at all
 
 ------------------------------------------------------------------------------
 DATASET — the instance runs the declared dataset
 ------------------------------------------------------------------------------
 
-[PASS] Instance is running the declared dataset  (54 ms)
+[PASS] Instance is running the declared dataset  (21 ms)
        declared fixtures.json → observed submissions=41, judges=30, teams=40, verdicts=126, assignments=199
 
 ==============================================================================
@@ -139,7 +145,7 @@ SUMMARY
 ==============================================================================
 
 T0       PASS  Health endpoint answers                                                           status ok; event 'Sample Hack 2026'; window closed (2026-02-26T18:00:00+00:00 → 2026-03-01T18:00:00+00:00); dev login True; commit integrity from mock
-T0       PASS  OpenAPI schema is served                                                          76 documented paths, OpenAPI 3.1.0, title 'Axion API'
+T0       PASS  OpenAPI schema is served                                                          80 documented paths, OpenAPI 3.1.0, title 'Axion API'
 T0       PASS  Interactive API docs are served                                                   Swagger UI served at /api/docs (937 bytes of HTML)
 T1       PASS  Public event configuration                                                        phase closed; window 2026-02-26T18:00:00+00:00 → 2026-03-01T18:00:00+00:00; 8 tracks; rubric Functionality 33.33%, Quality 33.33%, Innovation 33.33%; stats {'teams': 40, 'submissions': 41, 'drafts': 0, 'judges': 30, 'verdicts': 126, 'assignments': 199}
 T1       PASS  Public gallery lists projects                                                     40 projects, 8 tracks; ['demo_url', 'video_url'] withheld from anonymous callers
@@ -159,10 +165,13 @@ T3       PASS  A ballot is not readable without a token                         
 T3       PASS  The tally is published once the window closes, and refused with a reason before   window closed, tally published: 0 projects, The window has closed.
 T3       PASS  An unverified address is refused before a ballot exists                           422 for an address that is not one: the door is a verified email, and an unverified one never reaches a ballot
 T3       PASS  Project comment threads are public                                                comment thread readable without credentials: 0 visible, author addresses withheld from a non-organiser
-T4       PASS  The webhook outbox is managed from the console                                    0 receivers, 10 events in the catalogue, queue {'pending': 0, 'delivered': 0, 'failed': 0, 'dead': 0}; signed with X-Axion-Signature (sha256=<hex> over '<timestamp>.<body>' with the endpoint secret); 5 attempts, worker: none — POST /api/admin/webhooks/dispatch flushes the queue
+T3       PASS  The console's event clock is the clock the public event payload publishes         clock agreed with /api/event: 'Sample Hack 2026' 2026-02-26T18:00:00+00:00 → 2026-03-01T18:00:00+00:00 (source deployment, revision 0); submissions closed, record key published
+T3       PASS  A participant cannot read or move the event clock                                 403 for a participant on the organiser's clock: the deadline is moved by the organiser, not by whoever is running late
+T3       PASS  The submission window and the community window are published separately           submissions 2026-02-26T18:00:00+00:00 → 2026-03-01T18:00:00+00:00 (closed); ballot closed 2026-02-26T18:00:00+00:00 → 2026-03-04T18:00:00+00:00; results published
+T4       PASS  The webhook outbox is managed from the console                                    0 receivers, 11 events in the catalogue, queue {'pending': 0, 'delivered': 0, 'failed': 0, 'dead': 0}; signed with X-Axion-Signature (sha256=<hex> over '<timestamp>.<body>' with the endpoint secret); 5 attempts, worker: none — POST /api/admin/webhooks/dispatch flushes the queue
 T4       PASS  A participant cannot manage webhook receivers                                     403 from /api/admin/webhooks
 T4       PASS  Anonymous callers cannot read the webhook queue                                   401 from /api/admin/webhooks
-T4       PASS  The whole event exports as one signed, credential-free bundle                     v1 bundle, sha256 4d020ad0b44b312c…, 40 teams / 41 submissions / 126 verdicts, no credential in the document
+T4       PASS  The whole event exports as one signed, credential-free bundle                     v1 bundle, sha256 58e9fae18f76ff68…, 40 teams / 41 submissions / 126 verdicts, no credential in the document
 T4       PASS  A participant cannot export the event                                             403 from /api/admin/bundle/export
 T4       PASS  An unusable bundle is refused whole, by name                                      refused whole with 2 named problem(s): bundle_version 0 is not 1
 T4       PASS  The deployment states what it can prove, and with which key                       0 records issued (0 revoked); key hmac-sha256 df506c8d8cd83d1a published: The event window is closed, so the key is published and anyone can verify a record without asking this deployment.
@@ -176,7 +185,7 @@ AUTH     PASS  Participant cannot read the organizer leaderboard                
 AUTH     PASS  Anonymous request cannot read the organizer leaderboard                           401 with no credentials at all
 DATASET  PASS  Instance is running the declared dataset                                          declared fixtures.json → observed submissions=41, judges=30, teams=40, verdicts=126, assignments=199
 
-37 passed, 0 failed, 0 skipped (37 checks)
+40 passed, 0 failed, 0 skipped (40 checks)
 
 SKIP is not PASS: a skipped check states why it could not be observed. The
 automated pytest suite covers the same paths in-process (api/tests).
@@ -187,7 +196,7 @@ CLAIMED TIERS vs OBSERVED
 
 T1   claimed      verified                               4/4 checks passed
 T2   claimed      verified                               9/9 checks passed
-T3   claimed      verified                               5/5 checks passed
+T3   claimed      verified                               8/8 checks passed
 T4   claimed      verified                               11/11 checks passed
 
 Solid: T1, T2, T3, T4

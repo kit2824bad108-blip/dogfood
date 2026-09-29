@@ -29,7 +29,7 @@ evaluation.
 | [fixtures.json](./fixtures.json) | The organisers' dataset, verbatim as published: 41 projects, 30 judges, 8 tracks |
 | [data/axion-fixtures.json](./data/axion-fixtures.json) | Axion's own generated dataset, which the demo numbers below were computed against |
 | [acceptance-report.txt](./acceptance-report.txt) | Their checker, their dataset, run against this portal and committed as printed |
-| [acceptance-report.selfcheck.txt](./acceptance-report.selfcheck.txt) | Axion's own deeper self-check: twenty-one questions rather than their seven |
+| [acceptance-report.selfcheck.txt](./acceptance-report.selfcheck.txt) | Axion's own deeper self-check: forty questions rather than their seven |
 | [acceptance-report.axion.txt](./acceptance-report.axion.txt) | The tier-by-tier suite (T0–T4 plus bonus claims), on the demo dataset |
 
 ## The four files the brief names
@@ -193,7 +193,7 @@ Everything an organiser needs is in **/admin**:
 | Tracks & prizes | Create tracks (slug, description, prize pool) and prizes, per track or overall |
 | Rubric | Edit the criteria and their weights; the preview shows the resulting percentages |
 | Audit trail | The append-only record, newest first |
-| Event setup | Counts, judge creation, assignment backfill |
+| Event setup | **The event's own clock**: the submission deadline and the ballot window, editable while the event is running, with the consequence of each change stated before it is applied. Plus counts, judge creation and assignment backfill |
 | Archive | The publishable results bundle |
 
 The public **/gallery** page lists every submitted project with search and a track filter. It deliberately
@@ -209,7 +209,7 @@ route or a file in this repository.
 | ---- | ------ | -------- |
 | **T1 — core** | **Claimed** | Event window, tracks and prizes, drafts editable before the deadline, server-side deadline enforcement, a searchable public gallery, registration and teams with invite codes |
 | **T2 — judging** | **Claimed** | Weighted rubrics, blind technical-then-presentation ordering, Z-score normalization with a worked proof, per-judge progress, the normalized leaderboard, CSV exports of the leaderboard, every verdict and judging progress, coverage/provisional marking, and a duplicate review queue |
-| **T3 — community** | **Claimed** | Email-gated community ballots (`/vote`), a per-voter ballot order that is stable and reproducible, votes that are final and strikable rather than editable, project comment threads with duplicate refusal and moderation, and a tally that is refused with its reason while the window is open and published when it closes |
+| **T3 — community** | **Claimed** | Email-gated community ballots (`/vote`), a per-voter ballot order that is stable and reproducible, votes that are final and strikable rather than editable, project comment threads with duplicate refusal and moderation, a tally that is refused with its reason while the window is open and published when it closes, and an **organiser-controlled event clock** — the submission deadline and the ballot window are editable at run time, audited, revision-checked and announced on the webhooks, with the configuration left intact underneath |
 | **T4 — stretch** | **Claimed** | A signed webhook outbox with retries and dead-letter replay, signed participation records anyone can verify plus printable certificates, one whole-event bundle that exports and re-imports, and a self-contained embeddable gallery |
 
 Bonus items claimed, each with something behind it: the **normalization proof** ([JUDGING.md](./JUDGING.md)),
@@ -258,7 +258,7 @@ test starts a real uvicorn on a free port, imports the real dataset and runs the
 `claimed T1 T2` in that file is not shyness. Their checker has seven checks and all seven are T1/T2, so
 claiming T3 or T4 there would print `claimed T1 T2 T3 T4, verified T1 T2` — a note saying the claim was
 not verified. T3 and T4 are claimed where the evidence exists, in our own manifests:
-[acceptance-report.selfcheck.txt](./acceptance-report.selfcheck.txt) (37 checks, T1–T4 all verified) and
+[acceptance-report.selfcheck.txt](./acceptance-report.selfcheck.txt) (40 checks, T1–T4 all verified) and
 [acceptance-report.axion.txt](./acceptance-report.axion.txt) (36 checks, 34 pass, 2 skip with reasons). The
 self-check prints the ladder rule it applies, which is the same one their `run.py` uses: a tier counts only
 if every check of its own passed *and* every tier below it did.
@@ -310,8 +310,23 @@ organiser (the moderator) and never in the public payload, and every write is ra
 `throttle_events` table — in the database rather than in process memory, because a counter that lives in one
 worker silently stops applying the moment a deployment runs two.
 
-The interface is at **/vote** (the ballot), **/projects/{id}** (a project and its thread) and **/results**
-(the tally, or the reason there is not one yet).
+**The clock is the organiser's, and it is one clock.** The submission deadline and the ballot window used to
+be read once from the environment, which made "the deadline moved" an edit-and-restart rather than an act
+with a record. Now a single row in `event_settings` — at most one, enforced by the database — can override
+the configured window, and every reader resolves through `app/eventconfig.py`: the write path that refuses a
+late submission, the ballot, the tally's publication rule, the signed-record key, the archive and the bundle
+export. So an organiser can extend a deadline at 17:55 with the event running, and the participant who tries
+at 18:05 is refused by the new window, while the certificate issued afterwards carries it too. The move is
+partial (`PATCH {"ends_at": …}` touches nothing else), previewed (the response says whether submissions are
+open before and after, whether the community tally and the signing key become public, and how many projects
+already sit after the new deadline), revision-checked (a stale form is a `409`, not a silent overwrite) and
+attributed (an audit entry with the actor, the note and the before/after window, plus an
+`event.settings_updated` webhook). Emptying the table hands the clock back to the configuration, which was
+never overwritten — and a deployment that has never been moved behaves exactly as it did before, which is
+what keeps a fresh boot enforcing the fixture dataset's already-closed window.
+
+The interface is at **/vote** (the ballot), **/projects/{id}** (a project and its thread), **/results**
+(the tally, or the reason there is not one yet) and **/admin → Event setup** (the clock).
 
 ## Outbound and reproducible (T4)
 
@@ -441,7 +456,7 @@ expected paths, so the claim cannot rot silently.
 run.py                    the organisers' acceptance checker, as published
 fixtures.json             the organisers' dataset, as published — what compose seeds
 acceptance-report.txt     their report, committed as printed
-acceptance-report.selfcheck.txt   Axion's own deeper check, thirty-seven questions
+acceptance-report.selfcheck.txt   Axion's own deeper check, forty questions
 acceptance-report.axion.txt       the tier-by-tier suite, T0–T4 and the bonuses
 data/axion-fixtures.json  Axion's own generated dataset (the demo numbers)
 src/                      pointer: the code is api/ and web/ (see src/README.md)
@@ -451,7 +466,9 @@ DEMO.md                   the five-minute video: shot list, and what each shot p
 api/                      FastAPI service — owns the database, all auth and all math
   app/zscore.py           the normalization engine (pure functions, no framework imports)
   app/github.py           commit integrity
-  app/services.py         assignment, rubric weighting, event window
+  app/services.py         assignment, rubric weighting, the window every router asks about
+  app/eventconfig.py      the organiser's clock: the configured window, the stored override,
+                          and the one place that resolves between them
   app/fixture_dialects.py translates both fixture dialects into one canonical shape
   app/access.py           the four literal checker credentials, and the gate on them
   app/voting.py           community ballots, comment moderation rules, the hidden tally
@@ -460,11 +477,12 @@ api/                      FastAPI service — owns the database, all auth and al
   app/records.py          signed participation records and printable certificates
   app/bundle.py           whole-event export and an idempotent, dry-by-default import
   app/routers/            auth, event, teams, submissions, judging, community, admin,
-                          webhooks, records, bundle, embed, devtools
-  scripts/selfcheck.toml  Axion's own deeper manifest (thirty-seven checks, not theirs)
+                          event_admin (the organiser's clock), webhooks, records, bundle,
+                          embed, devtools
+  scripts/selfcheck.toml  Axion's own deeper manifest (forty checks, not theirs)
   scripts/dogfood_check.py  the checker that reads it
   scripts/acceptance.py   tier-by-tier acceptance runner
-  alembic/                migrations (0001 initial … 0008 webhooks and records)
+  alembic/                migrations (0001 initial … 0010 event settings)
   tests/                  pytest suite, including the math proofs and the seven checks
 web/                      Next.js App Router frontend (Tailwind + shadcn-style components)
 docker-compose.yml        db + api + web
@@ -515,7 +533,7 @@ cd web && npm ci && npm run typecheck && npm run build
 docker compose up --build
 python3 run.py .dogfood.toml > acceptance-report.txt
 
-# Axion's own deeper self-check, against the same instance: twenty-one questions
+# Axion's own deeper self-check, against the same instance: forty questions
 # rather than seven. Separate manifest, separate report, so nothing we assert
 # about ourselves can be mistaken for what was verified.
 python api/scripts/dogfood_check.py api/scripts/selfcheck.toml --out acceptance-report.selfcheck.txt
@@ -548,7 +566,7 @@ There are **three report artefacts**, deliberately separate, and none overwrites
 | File | Produced by | What it is |
 | ---- | ----------- | ---------- |
 | `acceptance-report.txt` | **the organisers' `run.py`** reading [.dogfood.toml](./.dogfood.toml) | The receipt the brief asks for: seven checks, tier by tier, committed exactly as printed. This is the only one of the three anyone else ran. |
-| `acceptance-report.selfcheck.txt` | `api/scripts/dogfood_check.py` reading [api/scripts/selfcheck.toml](./api/scripts/selfcheck.toml) | Axion's own deeper check, 37 checks against the fixture instance: the blind gate, all three CSV exports, the Z-score leaderboard, both sides of four role boundaries, the community ballot and its hidden tally, the webhook outbox, signed records, the bundle and the embed. It prints `claimed vs observed` for every tier and applies the same "a tier counts only if the tiers below it passed" rule their `run.py` does. |
+| `acceptance-report.selfcheck.txt` | `api/scripts/dogfood_check.py` reading [api/scripts/selfcheck.toml](./api/scripts/selfcheck.toml) | Axion's own deeper check, 40 checks against the fixture instance: the blind gate, all three CSV exports, the Z-score leaderboard, both sides of four role boundaries, the community ballot and its hidden tally, the organiser's clock agreeing with the public payload, the webhook outbox, signed records, the bundle and the embed. It prints `claimed vs observed` for every tier and applies the same "a tier counts only if the tiers below it passed" rule their `run.py` does. |
 | `acceptance-report.axion.txt` | `api/scripts/acceptance.py` | The tier-by-tier suite (36 checks, T0–T4 plus the bonus claims) against the **demo** dataset, because half of it asks what only an *open* event can answer. It prints a SKIP with its reason wherever something cannot be observed, and a FAIL the run is expected to be clean of. |
 
 ## Continuous integration
@@ -583,6 +601,7 @@ All variables are documented in `.env.example`. The ones that matter most:
 | `SECRET_KEY` | Signs session cookies. **Change before exposing the app.** |
 | `EVENT_START` / `EVENT_END` | The commit-integrity window **and** the submission deadline, enforced server-side. In `EVENT_SOURCE=env` leave both blank and the window is a 72-hour event that is **open now**. An explicit value wins, so a closed event stays closed. |
 | `EVENT_SOURCE` | `fixtures` (the compose default) or `env`. In `fixtures` the event **name and window come from the dataset**, and `EVENT_START` / `EVENT_END` are ignored: letting an environment value re-open an already-closed event would make the acceptance result depend on local configuration rather than on the code. |
+| *(none)* | The event clock is the one setting with no variable of its own: `PATCH /api/admin/event`, or **/admin → Event setup**, overrides whatever is configured, and `DELETE` on the same route hands it back. The configuration is never overwritten, so the override is always reversible. |
 | `SEED_MODE` | `fixtures` (the compose default — the organisers' file, already closed) or `demo` (the crafted dataset every demo number in these docs was computed against). |
 | `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | Enables "Continue with GitHub". Register the callback `{WEB_URL}/api/auth/github/callback`. Without them participants register with email. |
 | `GITHUB_TOKEN` | Raises the GitHub API limit from 60 to 5000 requests/hour. |
@@ -638,6 +657,14 @@ cd api && python -m pytest tests/test_fixture_determinism.py -q        # two cle
   rankings, and it says so.
 - **An imported dataset is not repaired.** A fixture with invalid records is refused whole rather than
   partially imported, because half an event is worse than none.
+- **Moving the deadline does not re-run anything.** Commit Integrity compares each repository against the
+  event window, and the verdicts already filed for a project stay as they were filed. An organiser who moves
+  the window is told exactly that in the response and in the console before applying it, and re-checks a
+  project from the Commit review tab if they want the number recomputed against the new window.
+- **The clock is authoritative for the server, not for an open browser tab.** There is no cache: every
+  request resolves the window from the database, so a change is immediate for the next request whoever makes
+  it. A page already rendered in someone's browser keeps the old deadline until it reloads — which is what the
+  `window_revised` flag on `/api/event` and the webhook announcement are for.
 - **Their checker inspects behaviour, not quality.** Seven requests prove the gallery is public, the closed
   event refuses a write, isolation holds and the CSV exports; they prove nothing about the math, the schema
   or the interface. `api/scripts/selfcheck.toml` and the pytest suite are where the rest is asserted, and

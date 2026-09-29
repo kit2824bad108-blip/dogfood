@@ -210,6 +210,11 @@ def _fresh_schema(pg_migrated, alembic):
         reset_public_schema()
         alembic.upgrade("head")
     _truncate_data_tables()
+    # The event clock is cached for callers with no session of their own; the rows
+    # it was resolved from have just been truncated, so it is stale by definition.
+    from app import eventconfig
+
+    eventconfig.reset_cache()
     yield
 
 

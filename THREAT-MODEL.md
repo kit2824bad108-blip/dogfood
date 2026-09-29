@@ -132,10 +132,11 @@ recollection. Axion makes collusion auditable; it does not claim to make it impo
 questions, or after the organiser has begun judging.
 
 **The control is the server clock.** `services.submission_window_closed()` compares
-`datetime.now(timezone.utc)` against `settings.event_end`, and `POST /api/submissions` calls it before
-touching the row. The browser is never asked whether the window is open, and no client-supplied timestamp is
-ever trusted. The UI shows a closed-window banner and disables the form, but that is courtesy: `curl` with a
-valid session gets the same `403`.
+`datetime.now(timezone.utc)` against the deadline `app/eventconfig.py` resolves — the deployment's
+configuration, or the organiser's row if the clock has been taken over — and `POST /api/submissions` calls it
+before touching the row. The browser is never asked whether the window is open, and no client-supplied
+timestamp is ever trusted. The UI shows a closed-window banner and disables the form, but that is courtesy:
+`curl` with a valid session gets the same `403`.
 
 | Attempt | Result |
 | ------- | ------ |
@@ -155,9 +156,24 @@ history against the event window and flags repositories whose history predates t
 client-controlled, and squash merges collapse history — so it produces a review queue and never an automatic
 disqualification. `integrity_*` columns are not read by the ranking code at all.
 
+**The deadline is the organiser's to move, and that is a feature with edges.** Since the clock can be taken
+over at run time, "the deadline was extended" becomes a thing an attacker with a stolen organiser session
+could do — so the ways in which that is *still* safe are the shape of the control:
+
+| Mechanism | Implementation | Effect |
+| --------- | -------------- | ------ |
+| Extension is an act, not a setting | `PATCH /api/admin/event`, organiser-only, with a mandatory audit entry carrying the actor, the IP, the note and the before/after window | A moved deadline is attributed, reversible and visible in the trail — unlike an environment variable nobody can date |
+| Concurrency is a conflict, not a race | `revision` on the row; a form that sends a stale revision gets `409` with the current window | A second organiser cannot silently overwrite the first's change, and a captured form cannot be replayed into an unrelated window |
+| The consequence is stated before it is applied | The response carries whether submissions are open before and after, whether the record key and the community tally become public, and how many projects already sit after the new deadline | An attacker's change is described back to them, and to whoever reads the trail afterwards |
+| Nothing already issued is rewritten | Records carry the window they were signed with; buckets and exports are recomputed, not re-signed | Moving the clock cannot invalidate or alter an artefact that has already been cited |
+| The configured window is never overwritten | `DELETE /api/admin/event` removes the row; the deployment's configuration is untouched | Recovery does not depend on remembering what the previous values were |
+| A fresh deployment is closed if the dataset says so | An empty table means the configured window is in force | The acceptance check cannot be satisfied by deleting a row, and a container with an untouched database behaves exactly as its configuration says |
+
 **Residual risk.** The deadline is enforced on writes through the API. Anyone with direct database access can
 write whatever they like — and will be doing it *without* an audit row, which is observable as a gap in the
-trail rather than as an edited entry. Guarding the database itself is deployment hardening (network policy,
+trail rather than as an edited entry. A stolen organiser session is an organiser (that is what the role
+means here), which is why the change is announced on the webhook queue rather than only stored: subscribers
+outside the deployment see it too. Guarding the database itself is deployment hardening (network policy,
 credentials), not application logic.
 
 ## Threat 4 — Identity and session attacks
@@ -262,7 +278,7 @@ so — and have a third party believe it.
 | --------- | -------------- | ------ |
 | Records are signed over the bytes that are stored | `records.sign` over `record.payload` as written, verified with `hmac.compare_digest` | Verification is a comparison, not a reconstruction: it cannot depend on how a backend round-trips a timestamp |
 | The claim is inside the signature | Event, subject, summary, algorithm, key fingerprint, code and verify URL | A verifier needs the record and the published key and nothing else |
-| The symmetric key is published **only after the close** | `settings.records_verifiable_publicly` derives from `event_window_closed`; `key_publication()` states the reason on the wire | Nobody can mint a "this team won" record while results still matter; afterwards a forgery changes nothing already issued and cited |
+| The symmetric key is published **only after the close** | `eventconfig.records_verifiable_publicly` derives from the *effective* close; `key_publication()` states the reason on the wire, and the console warns before a change that would publish the key | Nobody can mint a "this team won" record while results still matter; afterwards a forgery changes nothing already issued and cited — and closing the event early is now an explicit, audited organiser action rather than an accident of the environment |
 | Re-issuing is refused | `issue_for_event` skips a subject that already holds an unrevoked record | A signed statement about a moment cannot be silently replaced with a different one |
 | Corrections are additive | `revoked_at` / `revoked_reason`, and the signature is untouched | "Issued then revoked" and "never issued" stay distinguishable — which is the whole point of a revocation |
 

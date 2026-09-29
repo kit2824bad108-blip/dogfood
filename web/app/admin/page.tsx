@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { BundlePanel } from "@/components/console/bundle-panel";
+import { EventPanel } from "@/components/console/event-panel";
 import { RecordsPanel } from "@/components/console/records-panel";
 import { WebhooksPanel } from "@/components/console/webhooks-panel";
 import { RequireAuth } from "@/components/require-auth";
@@ -872,12 +873,20 @@ function AdminContent() {
 
       {tab === "event" && overview && (
         <div className="space-y-6">
+          {/* The clock first: it is the one thing on this screen that changes what
+              the rest of the deployment does, and it is the thing an organiser
+              comes here mid-event to move. */}
+          <EventPanel onSaved={refresh} />
+
           <Card>
             <CardHeader>
               <CardTitle>{overview.event.name}</CardTitle>
               <CardDescription>
                 {new Date(overview.event.starts_at).toLocaleString()} →{" "}
-                {new Date(overview.event.ends_at).toLocaleString()}
+                {new Date(overview.event.ends_at).toLocaleString()} ·{" "}
+                {overview.event.window_source === "organiser"
+                  ? "set here"
+                  : "from the deployment's configuration"}
               </CardDescription>
             </CardHeader>
             <CardContent>

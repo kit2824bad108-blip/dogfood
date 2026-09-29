@@ -3,11 +3,13 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Response
+from fastapi import Depends, FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy.orm import Session
 
-from . import access
+from . import access, eventconfig
 from .config import settings
+from .db import get_db
 from .readiness import readiness_report
 from .routers import (
     admin,
@@ -18,6 +20,7 @@ from .routers import (
     devtools,
     embed,
     event,
+    event_admin,
     judging,
     records,
     submissions,
@@ -32,6 +35,9 @@ async def lifespan(_app: FastAPI):
     # literal headers it needs are printed once at boot, in the shape the brief's
     # story shows. Dev deployments only, and silent on an empty database.
     access.announce()
+    # Resolve the event clock once, before the first request: a caller with no
+    # session of its own gets the resolved window rather than the configured one.
+    eventconfig.refresh()
     yield
 
 
@@ -72,6 +78,8 @@ app.include_router(judging.router)
 # the rest of the API does.
 app.include_router(community.router)
 app.include_router(admin.router)
+# The organiser's clock: the event's own dates, editable while it is running.
+app.include_router(event_admin.router)
 app.include_router(admin_import.router)
 # The T4 surface: an outbound webhook outbox an organiser manages, signed
 # participation records anyone can verify, a whole-event bundle that makes this
@@ -102,19 +110,23 @@ def health_ready(response: Response) -> dict:
 
 
 @app.get("/api/health", tags=["meta"])
-def health() -> dict:
+def health(db: Session = Depends(get_db)) -> dict:
+    clock = eventconfig.active(db)
+    window = eventconfig.window(db)
     return {
         "status": "ok",
-        "event": settings.event_name,
+        "event": clock.name,
         "github_oauth_enabled": settings.github_oauth_enabled,
         "local_dev_login": settings.local_dev_login,
         "commit_integrity_source": "mock" if settings.mock_github else "github",
         # The resolved window is published because a blank EVENT_END now means an
         # open, now-relative event. A judge can see the deadline without reading
-        # the process environment.
+        # the process environment — and, since the clock is editable, without
+        # knowing whether an organiser has moved it: `source` says which it is.
         "event_window": {
-            "opens_at": settings.event_start.isoformat(),
-            "closes_at": settings.event_end.isoformat(),
-            "closed": settings.event_window_closed,
+            "opens_at": window["opens_at"],
+            "closes_at": window["closes_at"],
+            "closed": window["closed"],
+            "source": window["source"],
         },
     }

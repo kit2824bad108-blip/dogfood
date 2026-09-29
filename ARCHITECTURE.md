@@ -42,7 +42,7 @@ view over the API. One schema, one migration history, one place where invariants
 
 ## Schema
 
-Eighteen tables, no ORM relationships (explicit joins, so there is no lazy-loading surprise). The full column
+Twenty-two tables, no ORM relationships (explicit joins, so there is no lazy-loading surprise). The full column
 list, ERD and constraint rationale live in [DATA-MODEL.md](./DATA-MODEL.md).
 
 | Table | Purpose | Notable constraints |
@@ -58,6 +58,8 @@ list, ERD and constraint rationale live in [DATA-MODEL.md](./DATA-MODEL.md).
 | `scores` | A judge's staged verdict on one submission | unique `(judge_id, submission_id)`, `rubric_id` for provenance |
 | `score_criteria` | Per-criterion values behind a verdict | unique `(score_id, key)` |
 | `audit_logs` | Append-only event trail | `action` and `created_at` indexed |
+| `import_batches` | One row per applied fixture import, with its counts and its source | `created_at` indexed; an import is always recorded, including a dry run |
+| `duplicate_reviews` | An organiser's decision about a suspected duplicate pair | unique `(submission_id, candidate_id)` |
 | `voters` | A community voter: an address and a **SHA-256 digest** of its ballot token | unique `email`, unique `token_hash` |
 | `votes` | One immutable ballot, strikable but never editable | **unique `(voter_id, submission_id)`**, `score` 1–5, `status` ∈ {cast, struck} |
 | `comments` | A project comment, hidden rather than deleted | `status` ∈ {visible, hidden}, `created_at` indexed |
@@ -65,6 +67,8 @@ list, ERD and constraint rationale live in [DATA-MODEL.md](./DATA-MODEL.md).
 | `webhook_endpoints` | A registered receiver and its signing secret | `active` indexed; `events` empty means everything |
 | `webhook_deliveries` | The signed outbox: one row per event per endpoint | `status` ∈ {pending, delivered, failed, dead} |
 | `participation_records` | A signed attestation, stored **as signed** | unique `code`; revocation is a column, never an edit |
+| `invite_tokens` | One-time judge onboarding links, stored as SHA-256 digests | unique `token_digest`; single-use, and expiring |
+| `event_settings` | The organiser's clock: the event's own dates, editable while it runs | **at most one row** (`CHECK (id = 1)`), plus a `revision` for optimistic concurrency |
 
 ### The staged score row
 
@@ -163,6 +167,7 @@ existing verdict (`score.technical_modified`, with previous and new values) — 
 | Admin | `GET /api/admin/{overview,leaderboard,flagged,audit,judging-progress,tracks,rubric}`, `POST /api/admin/{judges,tracks,prizes,rubric,assignments/backfill}`, `POST /api/admin/archive[/markdown]` |
 | Export | `GET /api/admin/export/{leaderboard,scores,judging-progress}.csv` — every export writes an `export.csv` audit entry |
 | Community (T3) | `POST /api/vote/register`, `GET|POST /api/vote/verify`, `GET /api/vote/ballot`, `POST /api/vote[/ballot]`, `GET /api/vote/results`, `GET|POST /api/submissions/{id}/comments`, `DELETE /api/comments/{id}`, and the organiser tools under `/api/admin/{community,votes/{id}/strike,comments/{id}/moderate,voters/{id}/block}` |
+| Event clock | `GET|PATCH|DELETE /api/admin/event`, `GET /api/admin/event/history` — the organiser moving the deadline, doing it knowingly, and doing it on the record |
 | Webhooks (T4) | `GET|POST /api/admin/webhooks`, `PATCH|DELETE /api/admin/webhooks/{id}`, `POST /api/admin/webhooks/{id}/test`, `POST /api/admin/webhooks/dispatch`, `GET /api/admin/webhooks/deliveries[/{id}]`, `POST …/deliveries/{id}/redeliver` |
 | Records (T4) | `POST /api/admin/records/issue`, `GET /api/admin/records`, `POST /api/admin/records/{code}/revoke`, and the public `GET /api/records[/{code}][/certificate]` |
 | Bundle (T4) | `GET /api/admin/bundle/export`, `POST /api/admin/bundle/{validate,import}` — the import is a **dry run** unless asked otherwise |
@@ -202,6 +207,36 @@ integrity, and per-verdict z-scores with the judge statistics used to produce th
 Archiving mutates nothing. Downloading it is safe mid-event, and the database stays up until an operator
 chooses to spin it down.
 
+## The organiser's clock
+
+The event's own dates — when submissions open and close, when the community ballot runs — used to live only
+in configuration, read once at import. That made the deadline a fact about the *process*: extending it meant
+editing an environment variable and restarting a container, and nothing in the database recorded that it had
+moved. `app/eventconfig.py` is the answer to that, and it is one small module with one job.
+
+- **Two inputs, one resolver.** The deployment's configuration (`EVENT_*` / `VOTING_*`, or the imported
+dataset's window under `EVENT_SOURCE=fixtures`) is the default; a single row in `event_settings` is the
+organiser's override. Every reader — `services.event_window()`, `voting.voting_window()`, the record key's
+publication rule, the archive, the bundle export, `/api/event`, `/api/health` — resolves through
+`eventconfig`, so a deployment cannot have a submission form and a certificate that disagree about the event.
+- **Empty means "configured", which is what keeps a cold boot honest.** A fresh `docker compose up` has no
+  row, so a fixture-mode deployment still starts *closed* and the acceptance brief's "a closed event refuses
+  submissions" check passes with nobody visiting a console. Moving the deadline is a deliberate act, not the
+  default state of the software.
+- **A change is partial, previewed and attributed.** PATCH moves the fields it names and leaves the rest
+  alone, because the row is a complete statement of the window rather than a set of overrides to re-derive.
+  The response describes the consequence in sentences — submissions open before and after, whether the record
+  key and the community tally become public, how many projects already sit after the new deadline — and every
+  write lands in the append-only audit trail and on the webhook queue (`event.settings_updated`).
+- **Zero rows or one, enforced by the database.** `CHECK (id = 1)` makes two deadlines unrepresentable,
+  including for a script or a `psql` session. `revision` makes two organisers editing at once a **409**
+  instead of the last save silently winning, and `DELETE /api/admin/event` hands the clock back to
+  configuration: the configured window was never overwritten, so the reset cannot fail to find it.
+- **The read path is the session's.** `active(db)` resolves through the session the caller already has, so a
+  change is visible to the next request with no cache to reason about; the module-level fallback exists only
+  for callers with no session at all (startup, an offline script), and is primed at boot and after every
+  write.
+
 ## The community surface (T3)
 
 `app/voting.py` owns the rules and `app/routers/community.py` owns the doors, for the same reason `zscore.py`
@@ -215,10 +250,12 @@ differ between them.
   `hmac-sha256(secret, token_digest + ':' + submission_id)`. Stable across reloads, different per voter, and
   reproducible by an organiser — three properties that a `random.shuffle()` per request cannot have, and the
   ballot payload names the method so the property is checkable from outside.
-- **The window is its own clock.** `settings.voting_start` / `voting_end` are derived from the event window
-  with a tail (default: three days past the submission deadline), so an event can stop taking work and keep
-  taking votes; `voting_window()` is the single place that decides the phase, and every public endpoint asks
-  it rather than reading a flag.
+- **The window is its own clock.** The community window is derived from the event window with a tail
+  (default: three days past the submission deadline), so an event can stop taking work and keep taking votes;
+  `voting_window()` is the single place that decides the phase, and every public endpoint asks it rather than
+  reading a flag. Both windows are resolved by `app/eventconfig.py` — see *The organiser's clock* below — so
+  moving a date in the console moves it for the ballot too, and the tally becomes public exactly when the
+  organiser says the crowd has stopped counting.
 - **The tally is cast-votes-only.** `voting.aggregate` never mixes struck votes into the headline figures;
   `include_struck=True` *adds* a separate `struck_votes` number instead of changing the average, because a
   figure that changes depending on which request produced it is not a tally.
@@ -309,16 +346,17 @@ implies, that `peer_scores` names judge A and *not* judge B, and that the number
 `fixtures.json` holds. A rename in one place and not the other fails in CI.
 
 `api/scripts/selfcheck.toml` is **Axion's own** manifest, read by `api/scripts/dogfood_check.py` with the
-standard library: thirty-seven checks rather than their seven, including the blind gate, all three CSV
+standard library: forty checks rather than their seven, including the blind gate, all three CSV
 exports, the Z-score leaderboard, both sides of four role boundaries, the community ballot and its hidden
-tally, the webhook outbox, signed records, the bundle and the embed. It fetches signed bearer tokens from
+tally, the organiser's clock agreeing with the public one, the webhook outbox, signed records, the bundle
+and the embed. It fetches signed bearer tokens from
 `GET /api/dev/checker-headers` so it stays valid on any machine, and the one write it attempts is *skipped*
 rather than sent when the event is open, so a read-only run cannot mutate what it measures. It also prints
 **claimed versus observed** for each tier and applies the same ladder rule their `run.py` does — a tier counts
 only if every check of its own passed *and* every tier below it did — so a claim in the report can never be
 more generous than the evidence under it.
 
-They are separate files and separate reports on purpose. Thirty-seven assertions of ours folded into the artefact
+They are separate files and separate reports on purpose. Forty assertions of ours folded into the artefact
 the organisers read would blur the only line that matters in an acceptance report: who ran it.
 `api/scripts/acceptance.py` remains the third, tier-by-tier tool (T0–T4 plus bonus claims), run against the
 **demo** dataset because half of it asks what only an open event can answer.

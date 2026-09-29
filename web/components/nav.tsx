@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { Deadline } from "@/components/deadline";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -10,7 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
 import type { EventWindow, Me, PublicEvent } from "@/lib/types";
-import { cn } from "@/lib/utils";
+import { WINDOW_MOVED_EVENT, cn } from "@/lib/utils";
 
 const linkClass =
   "rounded-md px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground";
@@ -20,17 +20,28 @@ export function Nav() {
   const [eventWindow, setEventWindow] = useState<EventWindow | null>(null);
   const pathname = usePathname();
 
-  useEffect(() => {
-    api
-      .get<Me>("/auth/me")
-      .then(setMe)
-      .catch(() => setMe({ authenticated: false, user: null }));
-    // The deadline is the one number every role needs, so it lives in the header.
+  /** The deadline is the one number every role needs, so it lives in the header. */
+  const loadWindow = useCallback(() => {
     api
       .get<PublicEvent>("/event")
       .then((payload) => setEventWindow(payload.event.submission_window))
       .catch(() => setEventWindow(null));
   }, []);
+
+  useEffect(() => {
+    api
+      .get<Me>("/auth/me")
+      .then(setMe)
+      .catch(() => setMe({ authenticated: false, user: null }));
+    loadWindow();
+    // An organiser can move the clock from the console while this header is on
+    // screen. A stale deadline banner is worse than none: it is the number the
+    // whole event is arranged around, and showing a closed window above a form
+    // that the API has just re-opened is a console that contradicts itself.
+    const onMoved = () => loadWindow();
+    window.addEventListener(WINDOW_MOVED_EVENT, onMoved);
+    return () => window.removeEventListener(WINDOW_MOVED_EVENT, onMoved);
+  }, [loadWindow]);
 
   // `/judge/score/12` belongs to Judging, so matching the prefix keeps the nav
   // honest one level down from the section it is named after.

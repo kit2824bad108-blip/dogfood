@@ -556,6 +556,78 @@ class Checker:
             "author addresses withheld from a non-organiser"
         )
 
+    def _check_event_clock_agrees_with_the_public_payload(
+        self, response: httpx.Response
+    ) -> tuple[str, str]:
+        """The console's clock and the public payload must be the same clock.
+
+        This is the seam that matters: an organiser moving a deadline is only
+        meaningful if the endpoint that refuses the write resolves the date the same
+        way. The check is deliberately about *agreement* rather than about which
+        source won, so it holds whether or not this deployment has taken the clock
+        over.
+        """
+        body = response.json()
+        clock = body.get("event") or {}
+        status = body.get("status") or {}
+        default = body.get("deployment_default") or {}
+        for field in ("name", "starts_at", "ends_at", "voting_opens_at", "voting_closes_at"):
+            if not clock.get(field):
+                raise CheckFailure(f"the console's clock has no {field}")
+            if not default.get(field):
+                raise CheckFailure(f"the console reports no configured {field} to fall back to")
+        if clock.get("source") not in {"deployment", "organiser"}:
+            raise CheckFailure(f"unrecognised clock source {clock.get('source')!r}")
+        if body.get("can_reset") is not (clock.get("source") == "organiser"):
+            raise CheckFailure(
+                "the console offers a reset that does not match where the clock came from"
+            )
+
+        published = ((self.event() or {}).get("event") or {}).get("submission_window") or {}
+        if published.get("closes_at") != clock["ends_at"]:
+            raise CheckFailure(
+                "the console's deadline and the public one differ: "
+                f"{clock['ends_at']} vs {published.get('closes_at')}"
+            )
+        if bool(status.get("submissions_closed")) is not bool(published.get("closed")):
+            raise CheckFailure(
+                "the console and the public payload disagree about whether the deadline has passed"
+            )
+        if not (body.get("validation") or {}).get("rules"):
+            raise CheckFailure("the console states no rules for a window it will validate")
+        return PASS, (
+            f"clock agreed with /api/event: {clock['name']!r} {clock['starts_at']} → "
+            f"{clock['ends_at']} (source {clock['source']}, revision {clock.get('revision')}); "
+            f"submissions {'closed' if status.get('submissions_closed') else 'open'}, "
+            f"record key {'published' if status.get('record_key_published') else 'held'}"
+        )
+
+    def _check_event_clock_denied(self, response: httpx.Response) -> tuple[str, str]:
+        return PASS, (
+            f"{response.status_code} for a participant on the organiser's clock: the "
+            "deadline is moved by the organiser, not by whoever is running late"
+        )
+
+    def _check_event_two_clocks(self, response: httpx.Response) -> tuple[str, str]:
+        event = ((response.json() or {}).get("event") or {})
+        submission = event.get("submission_window") or {}
+        ballot = event.get("voting_window") or {}
+        if not submission or not ballot:
+            raise CheckFailure(
+                "the public payload does not publish both clocks: "
+                f"submission={'yes' if submission else 'no'}, ballot={'yes' if ballot else 'no'}"
+            )
+        if ballot.get("phase") not in {"upcoming", "open", "closed"}:
+            raise CheckFailure(f"the ballot window reports phase {ballot.get('phase')!r}")
+        if event.get("window_source") not in {"deployment", "organiser"}:
+            raise CheckFailure(f"the payload does not say where the window came from: {event.get('window_source')!r}")
+        return PASS, (
+            f"submissions {submission.get('opens_at')} → {submission.get('closes_at')} "
+            f"({'closed' if submission.get('closed') else 'open'}); ballot "
+            f"{ballot.get('phase')} {ballot.get('opens_at')} → {ballot.get('closes_at')}; "
+            f"results {'published' if ballot.get('results_visible') else 'withheld'}"
+        )
+
     def _check_embed_gallery(self, response: httpx.Response) -> tuple[str, str]:
         page = response.text
         if "<script" in page or "<link" in page:

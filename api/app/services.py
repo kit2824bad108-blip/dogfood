@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from .config import settings
+from . import eventconfig
 from .github import check_commit_integrity
 from .models import Assignment, Prize, Rubric, Score, Submission, Team, Track, User
 
@@ -128,20 +128,29 @@ def weighted_technical_score(criteria: list[dict], values: dict[str, int]) -> in
     return max(1, min(10, int(round(blended))))
 
 
-def event_window() -> dict:
-    """Server-side view of the submission window. Client clocks are never trusted."""
+def event_window(db: Session | None = None) -> dict:
+    """Server-side view of the submission window. Client clocks are never trusted.
+
+    The boundaries come from `eventconfig` (the organiser's row if there is one,
+    otherwise the deployment's configuration). The *clock* stays here: this module
+    is where the deadline tests freeze `datetime`, and a server clock read from a
+    shared helper would be the one thing those tests could no longer pin.
+    """
+    active = eventconfig.active(db)
     now = datetime.now(timezone.utc)
     return {
         "now": now.isoformat(),
-        "opens_at": settings.event_start.isoformat(),
-        "closes_at": settings.event_end.isoformat(),
-        "closed": now > settings.event_end,
-        "not_yet_open": now < settings.event_start,
+        "opens_at": active.starts_at.isoformat(),
+        "closes_at": active.ends_at.isoformat(),
+        "closed": now > active.ends_at,
+        "not_yet_open": now < active.starts_at,
+        "source": active.source,
+        "revision": active.revision,
     }
 
 
-def submission_window_closed() -> bool:
-    return datetime.now(timezone.utc) > settings.event_end
+def submission_window_closed(db: Session | None = None) -> bool:
+    return datetime.now(timezone.utc) > eventconfig.active(db).ends_at
 
 
 def judge_ids(db: Session) -> list[int]:
@@ -195,10 +204,11 @@ def assign_submission_to_new_judge(db: Session, judge_id: int) -> int:
 
 def run_integrity_check(db: Session, submission: Submission, *, force_mock: bool | None = None) -> dict:
     """Refresh a submission's Commit Integrity fields from GitHub (or the mock)."""
+    clock = eventconfig.active(db)
     report = check_commit_integrity(
         submission.repo_url,
-        event_start=settings.event_start,
-        event_end=settings.event_end,
+        event_start=clock.starts_at,
+        event_end=clock.ends_at,
         mock=force_mock,
     )
     submission.integrity_pct_in_window = report.get("pct_in_window")

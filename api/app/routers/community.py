@@ -228,7 +228,7 @@ def _cast(
             "submission_id": submission.id,
             "submission_title": submission.title,
             "voter_ref": f"voter_{vote.voter_id}",
-            "window_closes_at": voting.voting_window()["closes_at"],
+            "window_closes_at": voting.voting_window(db)["closes_at"],
         },
     )
     return "cast", vote
@@ -295,7 +295,7 @@ def register_voter(
         "token": token,
         "verify_url": verify_path,
         "ballot_url": "/vote",
-        "window": voting.voting_window(),
+        "window": voting.voting_window(db),
         "delivery": _delivery_note(),
     }
 
@@ -338,7 +338,7 @@ def verify_voter_link(
     _set_voter_cookie(response, token)
     return {
         "voter": voting.serialize_voter(voter),
-        "window": voting.voting_window(),
+        "window": voting.voting_window(db),
     }
 
 
@@ -363,7 +363,7 @@ def my_ballot_state(
     votes = voting.voter_votes(db, voter)
     return {
         "voter": voting.serialize_voter(voter),
-        "window": voting.voting_window(),
+        "window": voting.voting_window(db),
         "voted": sorted(votes),
         "votes": [voting.serialize_vote(vote) for vote in sorted(votes.values(), key=lambda v: v.submission_id)],
     }
@@ -417,7 +417,7 @@ def get_ballot(
     cast = [entry for entry in ballot if entry["my_score"] is not None]
     return {
         "voter": voting.serialize_voter(voter),
-        "window": voting.voting_window(),
+        "window": voting.voting_window(db),
         "ballot": ballot,
         "progress": {
             "votable": len(ballot),
@@ -471,7 +471,7 @@ def cast_vote(
         )
     return {
         "vote": voting.serialize_vote(vote) if vote else None,
-        "window": voting.voting_window(),
+        "window": voting.voting_window(db),
         "note": "Your vote is recorded. No tally is published until the window closes.",
     }
 
@@ -530,7 +530,7 @@ def cast_ballot(
         "cast": cast,
         "already_cast": already,
         "votes": votes,
-        "window": voting.voting_window(),
+        "window": voting.voting_window(db),
         "note": "Your ballot is recorded. No tally is published until the window closes.",
     }
 
@@ -545,23 +545,23 @@ def vote_results(
     """Community results. 403 until the window closes, unless you are an organiser."""
     _limited_read(db, "vote.results", client_ip(request), "requests")
     organiser = user is not None and user.role == "admin"
-    if not voting.results_visible() and not organiser:
+    if not voting.results_visible(db) and not organiser:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail={
                 "detail": "Community results are hidden until the voting window closes",
-                "window": voting.voting_window(),
+                "window": voting.voting_window(db),
             },
         )
 
     payload = voting.aggregate(db, include_struck=include_struck and organiser)
     payload["visibility"] = {
-        "results_visible": voting.results_visible(),
-        "shown_to": "organiser" if organiser and not voting.results_visible() else "everyone",
+        "results_visible": voting.results_visible(db),
+        "shown_to": "organiser" if organiser and not voting.results_visible(db) else "everyone",
         "reason": (
             "The window is open, so no tally is published: a running total would "
             "let the first votes decide the rest."
-            if not voting.results_visible()
+            if not voting.results_visible(db)
             else "The window has closed."
         ),
     }
@@ -797,7 +797,7 @@ def community_overview(
         .limit(50)
     ).all()
     return {
-        "window": voting.voting_window(),
+        "window": voting.voting_window(db),
         "participation": voting.participation(db),
         "results": voting.aggregate(db, include_struck=True)["results"],
         "integrity": voting.integrity_signals(db),

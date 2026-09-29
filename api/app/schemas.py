@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
@@ -244,6 +245,52 @@ class JudgeInviteRequest(BaseModel):
         if not EMAIL_RE.match(value):
             raise ValueError("Enter a valid email address")
         return value
+
+
+class EventSettingsUpdateRequest(BaseModel):
+    """A move of the organiser's clock. Every field is optional: a PATCH says what
+    changed, not what the window should become, so `{"ends_at": ...}` extends a
+    deadline without touching the ballot window.
+
+    Timestamps are accepted as ISO-8601. A naive value is read as UTC rather than
+    as the server's local time — a deadline that depends on the host's timezone
+    table is exactly the class of bug this project keeps writing tests against —
+    and every stored value is converted to UTC.
+    """
+
+    # An unknown key is a 422 rather than something silently dropped: a console
+    # that sent `{"submissions_open": false}` and got a 200 would be a control
+    # that appears to work and does nothing, which is worse than an error.
+    model_config = ConfigDict(extra="forbid")
+
+    name: Optional[str] = Field(default=None, min_length=1, max_length=160)
+    starts_at: Optional[datetime] = None
+    ends_at: Optional[datetime] = None
+    voting_opens_at: Optional[datetime] = None
+    voting_closes_at: Optional[datetime] = None
+    note: Optional[str] = Field(default=None, max_length=500)
+    # The revision the console read. A mismatch is a 409 rather than a silent
+    # overwrite of an edit somebody else made in the meantime.
+    expected_revision: Optional[int] = Field(default=None, ge=0)
+
+    @field_validator("starts_at", "ends_at", "voting_opens_at", "voting_closes_at")
+    @classmethod
+    def utc(cls, value: Optional[datetime]) -> Optional[datetime]:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+
+    @field_validator("name")
+    @classmethod
+    def not_blank(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        trimmed = value.strip()
+        if not trimmed:
+            raise ValueError("The event needs a name")
+        return trimmed
 
 
 class AcceptInviteRequest(BaseModel):

@@ -31,14 +31,36 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   if (!response.ok) {
-    const detail =
-      body && typeof body === "object" && "detail" in body
-        ? String((body as { detail: unknown }).detail)
-        : `Request failed with status ${response.status}`;
-    throw new ApiError(response.status, detail);
+    throw new ApiError(response.status, describe(body, response.status));
   }
 
   return body as T;
+}
+
+/**
+ * The readable half of a failed response.
+ *
+ * Most endpoints answer `{"detail": "…"}`, which is already a sentence. Two
+ * shapes are not: pydantic's validation errors, which arrive as a list of
+ * `{loc, msg}`; and the structured refusals this project returns when the reason
+ * is more than one line — a moved deadline refused for being a stale revision
+ * carries the current window with it. Rendering either of those with `String()`
+ * produces "[object Object]", which is a console that cannot explain itself.
+ */
+function describe(body: unknown, status: number): string {
+  if (typeof body === "string" && body.trim()) return body;
+  if (body && typeof body === "object") {
+    const record = body as Record<string, unknown>;
+    for (const key of ["error", "detail", "message"]) {
+      const value = record[key];
+      if (typeof value === "string" && value.trim()) return value;
+      if (Array.isArray(value)) {
+        const first = value[0] as Record<string, unknown> | undefined;
+        if (first && typeof first.msg === "string") return first.msg;
+      }
+    }
+  }
+  return `Request failed with status ${status}`;
 }
 
 export const api = {

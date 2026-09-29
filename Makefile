@@ -47,7 +47,7 @@ acceptance:
 	python3 run.py .dogfood.toml > acceptance-report.txt
 	@echo "acceptance-report.txt written by the organisers' run.py"
 
-# Axion's own deeper check: nineteen questions against the same instance, from
+# Axion's own deeper check: forty questions against the same instance, from
 # api/scripts/selfcheck.toml. Deliberately a separate file and a separate report,
 # so nothing Axion asserts about itself can be confused with what was verified.
 acceptance-selfcheck:

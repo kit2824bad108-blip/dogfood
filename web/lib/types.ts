@@ -398,7 +398,16 @@ export type BalancePlan = {
 };
 
 export type Overview = {
-  event: { name: string; starts_at: string; ends_at: string };
+  event: {
+    name: string;
+    starts_at: string;
+    ends_at: string;
+    /** Where the window came from — the console says so rather than letting a
+     * moved deadline look like one that was always there. */
+    window_source?: EventWindowSource;
+    voting_opens_at?: string;
+    voting_closes_at?: string;
+  };
   totals: Record<string, number>;
 };
 
@@ -610,6 +619,11 @@ export type BundleEvent = {
   ends_at: string;
   voting_opens_at: string;
   voting_closes_at: string;
+  /** Whether the window travelled from the deployment's configuration or from an
+   * organiser's edit; an exported event has to say which. */
+  source?: EventWindowSource;
+  revision?: number;
+  note?: string | null;
 };
 
 export type EventBundle = {
@@ -620,6 +634,85 @@ export type EventBundle = {
   counts: Record<string, number>;
   tables: Record<string, Array<Record<string, unknown>>>;
   checksum: string;
+};
+
+// ── the event clock (organiser-controlled) ──────────────────────────────────
+
+/** Where the effective event window came from. */
+export type EventWindowSource = "deployment" | "organiser";
+
+export type EventClock = {
+  name: string;
+  starts_at: string;
+  ends_at: string;
+  voting_opens_at: string;
+  voting_closes_at: string;
+  source: EventWindowSource;
+  revision: number;
+  note: string | null;
+  updated_at: string | null;
+  updated_by: string | null;
+};
+
+/** What a proposed change would do, in sentences rather than flags. */
+export type EventImpact = {
+  submissions_open_before: boolean;
+  submissions_open_after: boolean;
+  results_public_before: boolean;
+  results_public_after: boolean;
+  submissions_after_deadline: number;
+  submissions_after_deadline_ids: number[];
+  warnings: string[];
+};
+
+export type EventStatus = {
+  now: string;
+  submissions_open: boolean;
+  submissions_closed: boolean;
+  submissions_upcoming: boolean;
+  voting_open: boolean;
+  voting_phase: "upcoming" | "open" | "closed";
+  results_visible: boolean;
+  record_key_published: boolean;
+};
+
+export type EventSettings = {
+  event: EventClock;
+  deployment_default: EventClock;
+  overridden: boolean;
+  can_reset: boolean;
+  status: EventStatus;
+  impact: EventImpact;
+  validation: {
+    name_max: number;
+    note_max: number;
+    timezone: string;
+    rules: string[];
+  };
+};
+
+export type EventSettingsUpdate = {
+  event: EventClock;
+  before: EventClock;
+  changed: string[];
+  impact: EventImpact;
+  warnings: string[];
+  status: EventStatus;
+  audited?: boolean;
+  notice: string;
+};
+
+export type EventHistoryEntry = {
+  id: number;
+  action: string;
+  actor_email: string | null;
+  at: string | null;
+  ip: string | null;
+  note: string | null;
+  revision: number | null;
+  changed: string[];
+  before: Record<string, unknown> | null;
+  after: Record<string, unknown> | null;
 };
 
 export type BundleImportResult = {

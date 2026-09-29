@@ -50,8 +50,14 @@ DEFAULT_PASSWORD = "password123"
 @pytest.fixture(autouse=True)
 def _fresh_schema():
     """Rebuild the schema per test so fixtures are isolated."""
+    from app import eventconfig
+
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
+    # The resolved event clock is cached for callers with no session of their own
+    # (a boot, an offline script). The schema it was resolved from is gone, so the
+    # cache has to go with it — otherwise one test's deadline leaks into the next.
+    eventconfig.reset_cache()
     yield
 
 
@@ -152,17 +158,23 @@ def voting_closed(monkeypatch):
     not close the event: these two tests would otherwise prove nothing about the
     "results are hidden until voting closes" rule, because every write in the
     event would be refused for an unrelated reason.
+
+    The window is replaced on `app.config` because that is where the event clock
+    is resolved from (`app/eventconfig.py`): a reader that only saw its own
+    module-level copy would make this fixture a no-op.
     """
     from dataclasses import replace
 
-    from app import config, voting
+    from app import config, eventconfig, voting
 
     expired = replace(
         config.settings,
         voting_start=_NOW - timedelta(hours=48),
         voting_end=_NOW - timedelta(hours=1),
     )
-    monkeypatch.setattr(voting, "settings", expired)
+    monkeypatch.setattr(config, "settings", expired)
+    monkeypatch.setattr(voting, "settings", expired, raising=False)
+    eventconfig.reset_cache()
     return expired
 
 
@@ -177,6 +189,8 @@ def closed_window(monkeypatch):
 
     from app import config
 
+    from app import eventconfig
+
     expired = replace(
         config.settings,
         event_start=_NOW - timedelta(hours=96),
@@ -190,4 +204,5 @@ def closed_window(monkeypatch):
     ):
         monkeypatch.setattr(f"{module}.settings", expired, raising=False)
     monkeypatch.setattr(config, "settings", expired)
+    eventconfig.reset_cache()
     return expired
