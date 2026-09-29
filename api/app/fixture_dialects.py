@@ -275,7 +275,10 @@ def _from_dogfood(payload: dict[str, Any]) -> dict[str, Any]:
             "admin": {
                 "email": ADMIN_EMAIL_TEMPLATE.format(slug=slug),
                 "name": ADMIN_NAME_TEMPLATE.format(name=name),
-            }
+                "password": "password",
+            },
+            "judge": {"password": "password"},
+            "participant": {"password": "password"},
         },
         "teams": [
             {

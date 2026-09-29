@@ -154,7 +154,8 @@ def test_invite_custom_expiry(client, db):
     )
     assert resp.status_code == 200
     invite = db.scalar(select(InviteToken).where(InviteToken.email == "exp@test.dev"))
-    delta = invite.expires_at - datetime.now(timezone.utc)
+    expires_at = invite.expires_at.replace(tzinfo=timezone.utc) if invite.expires_at.tzinfo is None else invite.expires_at
+    delta = expires_at - datetime.now(timezone.utc)
     assert timedelta(minutes=50) < delta < timedelta(hours=1, minutes=10)
 
 
